@@ -1,0 +1,16 @@
+{
+  "vehicles": [],
+  "drivers": [],
+  "assignments": [],
+  "trips": [],
+  "maintenance": [],
+  "fuel_logs": [],
+  "dashboard": {
+    "total_vehicles": 0,
+    "active_drivers": 0,
+    "assigned_vehicles": 0,
+    "total_fuel_spend": 0,
+    "total_maintenance": 0,
+    "recent_trips": 0
+  }
+}

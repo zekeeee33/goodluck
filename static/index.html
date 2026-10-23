@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Manage vehicles, drivers, assignments, trips, fuel, tire monitoring, maintenance, and hauling revenue."
+    />
+    <title>Good Luck Forwarding Systems Inc. Fleet Management System</title>
+    <link rel="icon" type="image/png" href="/static/glfs-logo.png" />
+    <script src="/static/theme.js"></script>
+    <link rel="stylesheet" href="/static/tailwind.generated.css?v=tailwind-2" />
+    <script src="/static/app.js?v=location-dispatch-9" defer></script>
+  </head>
+  <body>
+    <div class="app-shell min-h-screen bg-fleet-canvas text-fleet-ink">
+      <header class="sidebar border-b border-[var(--border)] bg-fleet-primary text-fleet-on-primary">
+        <a class="brand" href="#dashboard" aria-label="Fleet management home">
+          <img class="brand-mark" src="/static/glfs-logo.png" alt="" />
+          <span class="brand-copy">
+            <strong>Good Luck Forwarding</strong>
+            <small>Systems Inc. · Fleet Management System</small>
+          </span>
+        </a>
+        <button class="sidebar-collapse" id="sidebar-collapse" type="button" aria-expanded="true" aria-label="Collapse navigation" title="Collapse navigation">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m14.5 5-7 7 7 7"/></svg>
+        </button>
+        <button class="mobile-nav-toggle" id="mobile-nav-toggle" type="button" aria-expanded="false" aria-controls="main-navigation">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+          <span>Menu</span>
+        </button>
+
+        <nav class="nav" id="main-navigation" aria-label="Main navigation" hidden>
+          <div class="nav-group" role="group" aria-label="Overview" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-overview" type="button" aria-expanded="false" aria-controls="nav-panel-overview" title="Overview">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg>
+              <span class="nav-category-label">Overview</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+            </button>
+            <div class="nav-mega-panel" id="nav-panel-overview" role="region" aria-labelledby="nav-category-overview" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">OVERVIEW</p><h2>Workspace overview</h2><p>Fleet activity at a glance.</p></div>
+              <div class="nav-mega-grid nav-mega-grid-single">
+                <a class="nav-link nav-item" href="#dashboard" data-page="dashboard" aria-label="Dashboard">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg><span><span class="nav-link-label">Dashboard</span><small>Fleet activity and operational summary</small></span>
+                </a>
+              </div>
+            </div>
+          </div>
+          <div class="nav-group" role="group" aria-label="Operations" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-operations" type="button" aria-expanded="false" aria-controls="nav-panel-operations" title="Operations">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7.5" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/></svg>
+              <span class="nav-category-label">Operations</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+            </button>
+            <div class="nav-mega-panel" id="nav-panel-operations" role="region" aria-labelledby="nav-category-operations" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">OPERATIONS</p><h2>Trip operations</h2><p>Record shipments and review dispatch activity.</p></div>
+              <div class="nav-mega-grid">
+                <a class="nav-link nav-item" href="#trips" data-page="trips" aria-label="Trips">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 18c3-8 5-8 8-4s5 4 8-8"/><circle cx="4" cy="18" r="1.5"/><circle cx="20" cy="6" r="1.5"/></svg><span><span class="nav-link-label">Trips</span><small>Review trip records and manifests</small></span>
+                </a>
+                <a class="nav-link nav-item" href="/dispatcher/add-trip" data-page="trips" data-nav-route="add-trip" aria-label="Add trip">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></svg><span><span class="nav-link-label">Add Trip</span><small>Create a shipment record</small></span>
+                </a>
+                <a class="nav-link nav-item" href="#trips" data-page="trips" data-dispatch-tab="arrivals" aria-label="Pending arrivals">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 12h15M13 6l6 6-6 6"/><path d="M4 5v14"/></svg><span><span class="nav-link-label">Pending Arrivals</span><small>Verify ISM and record receiving</small></span>
+                </a>
+              </div>
+            </div>
+          </div>
+          <div class="nav-group" role="group" aria-label="Fleet management" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-fleet" type="button" aria-expanded="false" aria-controls="nav-panel-fleet" title="Fleet management">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7.5" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/></svg>
+              <span class="nav-category-label">Fleet Management</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+            </button>
+            <div class="nav-mega-panel" id="nav-panel-fleet" role="region" aria-labelledby="nav-category-fleet" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">FLEET MANAGEMENT</p><h2>People and vehicles</h2><p>Manage fleet assets, drivers, and assignments.</p></div>
+              <div class="nav-mega-grid">
+                <a class="nav-link nav-item" href="#vehicles" data-page="vehicles" aria-label="Trucks and trailers">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7.5" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/></svg><span><span class="nav-link-label">Trucks &amp; Trailers</span><small>Truck and trailer registry</small></span>
+                </a>
+                <a class="nav-link nav-item" href="#drivers" data-page="drivers" aria-label="Drivers">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0M8.5 13.5l3.5 2 3.5-2"/></svg><span><span class="nav-link-label">Drivers</span><small>Driver directory and status</small></span>
+                </a>
+                <a class="nav-link nav-item" href="#assignments" data-page="assignments" aria-label="Vehicle assignments">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h15l-3-3M20 17H5l3 3"/></svg><span><span class="nav-link-label">Vehicle Assignments</span><small>Review assigned drivers and vehicles</small></span>
+                </a>
+              </div>
+            </div>
+          </div>
+          <div class="nav-group" role="group" aria-label="Fuel and maintenance" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-upkeep" type="button" aria-expanded="false" aria-controls="nav-panel-upkeep" title="Fuel and maintenance">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 20V5.5A2.5 2.5 0 0 1 8.5 3h6A2.5 2.5 0 0 1 17 5.5V20M4 20h15M9 7h5v4H9zM17 8h2l2 2v6a2 2 0 0 1-4 0v-3"/></svg>
+              <span class="nav-category-label">Fuel &amp; Maintenance</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+            </button>
+            <div class="nav-mega-panel" id="nav-panel-upkeep" role="region" aria-labelledby="nav-category-upkeep" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">FUEL &amp; MAINTENANCE</p><h2>Fleet upkeep</h2><p>Track fuel records and maintenance activity.</p></div>
+              <div class="nav-mega-grid">
+                <a class="nav-link nav-item" href="#fuel" data-page="fuel" aria-label="Fuel logs">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 20V5.5A2.5 2.5 0 0 1 8.5 3h6A2.5 2.5 0 0 1 17 5.5V20M4 20h15M9 7h5v4H9zM17 8h2l2 2v6a2 2 0 0 1-4 0v-3"/></svg><span><span class="nav-link-label">Fuel Logs</span><small>Fuel expenses, allocations, and invoices</small></span>
+                </a>
+                <a class="nav-link nav-item" href="#maintenance" data-page="maintenance" aria-label="Maintenance logs">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="m14.2 6.1 3.7 3.7M5 19l7.8-7.8m-2-6.1 1.7 1.7-1.4 2.4 2 2 2.4-1.4 1.7 1.7 2.7-.7.7-2.7-1.7-1.7 1.4-2.4-2-2-2.4 1.4-1.7-1.7z"/></svg><span><span class="nav-link-label">Maintenance Logs</span><small>Service records and maintenance costs</small></span>
+                </a>
+                <a class="nav-link nav-item" href="#tires" data-page="tires" aria-label="Tire monitoring sheet">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3.25"/><path d="M12 3.5v2M12 18.5v2M3.5 12h2M18.5 12h2M6 6l1.4 1.4m9.2 9.2L18 18M18 6l-1.4 1.4m-9.2 9.2L6 18"/></svg><span><span class="nav-link-label">Tire Monitoring Sheet</span><small>Track tire assignments and service life</small></span>
+                </a>
+              </div>
+            </div>
+          </div>
+          <div class="nav-group" role="group" aria-label="Finance and payroll" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-finance" type="button" aria-expanded="false" aria-controls="nav-panel-finance" title="Finance and payroll">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h3"/></svg>
+              <span class="nav-category-label">Finance &amp; Payroll</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+            </button>
+            <div class="nav-mega-panel" id="nav-panel-finance" role="region" aria-labelledby="nav-category-finance" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">FINANCE &amp; PAYROLL</p><h2>Payroll</h2><p>Review driver earnings and payroll periods.</p></div>
+              <div class="nav-mega-grid nav-mega-grid-single">
+                <a class="nav-link nav-item" href="#payroll" data-page="payroll" aria-label="Payroll">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M7 21V4h6a4 4 0 0 1 0 8H7m0-4h10"/></svg><span><span class="nav-link-label">Payroll</span><small>Driver statements and payroll review</small></span>
+                </a>
+              </div>
+            </div>
+          </div>
+          <div class="nav-group" role="group" aria-label="Reports and analytics" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-reports" type="button" aria-expanded="false" aria-controls="nav-panel-reports" title="Reports and analytics">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19.5h16M6.5 16V11m5.5 5V5m5.5 11V8"/></svg>
+              <span class="nav-category-label">Reports &amp; Analytics</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+            </button>
+            <div class="nav-mega-panel" id="nav-panel-reports" role="region" aria-labelledby="nav-category-reports" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">REPORTS &amp; ANALYTICS</p><h2>Performance and exports</h2><p>Explore hauling-rate performance and download reports.</p></div>
+              <div class="nav-mega-grid">
+                <a class="nav-link nav-item" href="#revenue" data-page="revenue" aria-label="Revenue and hauling performance">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19.5h16M6.5 16V11m5.5 5V5m5.5 11V8"/></svg><span><span class="nav-link-label">Revenue &amp; Hauling Performance</span><small>Revenue analytics and route performance</small></span>
+                </a>
+                <a class="nav-link nav-item" href="/api/export" data-role="administrator" aria-label="Export Excel report">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 3v12m-5-5 5 5 5-5M5 17v4h14v-4"/></svg><span><span class="nav-link-label">Export Excel Report</span><small>Download the fleet report workbook</small></span>
+                </a>
+              </div>
+            </div>
+          </div>
+        </nav>
+
+      </header>
+
+      <div class="main-column">
+        <header class="topbar">
+          <div class="topbar-spacer"></div>
+          <div class="notification-menu-wrap" id="notification-menu-wrap" hidden>
+            <button class="button button-secondary button-small notification-toggle" id="notification-toggle" type="button" aria-expanded="false" aria-controls="notification-center" aria-label="Notifications">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/></svg>
+              <span>Notifications</span>
+              <span class="notification-count" id="notification-count" hidden>0</span>
+            </button>
+            <section class="notification-center" id="notification-center" aria-label="Notifications" hidden>
+              <div class="notification-center-heading">
+                <h2>Notifications</h2>
+                <button class="text-button" id="notifications-read-all" type="button">Mark all as read</button>
+              </div>
+              <div class="notification-filters">
+                <input id="notification-dispatcher-filter" type="search" placeholder="Filter dispatcher" aria-label="Filter by dispatcher" />
+                <select id="notification-type-filter" aria-label="Filter by data type">
+                  <option value="">All data types</option>
+                  <option value="NEW_TRIP">Trips</option>
+                  <option value="NEW_LOAD_MANIFEST">Load manifests</option>
+                  <option value="NEW_FUEL_LOG">Fuel logs</option>
+                  <option value="NEW_MAINTENANCE_LOG">Maintenance</option>
+                </select>
+                <input id="notification-date-filter" type="date" aria-label="Filter by date" />
+                <select id="notification-status-filter" aria-label="Filter by read status">
+                  <option value="">All status</option>
+                  <option value="unread">Unread</option>
+                  <option value="read">Read</option>
+                </select>
+              </div>
+              <p class="notification-error" id="notification-error" role="status" hidden></p>
+              <div class="notification-list" id="notification-list" aria-live="polite">
+                <p class="notification-empty">Loading notifications…</p>
+              </div>
+            </section>
+          </div>
+          <button class="button button-secondary button-small theme-toggle" id="theme-toggle" type="button">
+            <span class="theme-icon" aria-hidden="true">☾</span>
+            <span class="theme-label">Dark mode</span>
+          </button>
+          <span class="signed-in-user" id="signed-in-user" aria-live="polite"></span>
+          <button class="button button-secondary button-small" id="sign-out" type="button">Sign out</button>
+          <div class="avatar" aria-label="Fleet manager">FM</div>
+        </header>
+
+        <main class="main-content mx-auto w-full max-w-[1600px]">
+          <div id="toast-region" class="toast-region" aria-live="polite"></div>
+          <section id="app-view" aria-live="polite" aria-busy="true">
+            <div class="loading-card">Loading fleet information…</div>
+          </section>
+          <dialog class="record-dialog image-preview-dialog" aria-labelledby="image-preview-title">
+            <div class="dialog-header">
+              <div><p class="eyebrow">IMAGE PREVIEW</p><h2 id="image-preview-title">Image preview</h2></div>
+              <button class="icon-button dialog-close" data-action="close-image-preview" type="button" aria-label="Close image preview">×</button>
+            </div>
+            <div class="fuel-invoice-full-preview">
+              <p class="fuel-invoice-image-loading" role="status" hidden>Loading image…</p>
+              <p class="fuel-invoice-image-error" role="alert" hidden>Image is unavailable.</p>
+              <img alt="Image preview" hidden />
+            </div>
+          </dialog>
+        </main>
+        <footer class="footer mx-auto w-full max-w-[1600px]">
+          <span>Good Luck Forwarding Systems Inc. · Fleet operations workspace</span>
+          <small class="watermark">Designed &amp; Developed By: Edwin Angelo Catequista <span aria-hidden="true">·</span> Powered By: GLFS Incorporated</small>
+        </footer>
+      </div>
+    </div>
+  </body>
+</html>
