@@ -133,6 +133,12 @@ def _dispatch_rpc(function_name: str, params: dict[str, Any] | None = None) -> A
         message = str(getattr(exc, "message", "") or "")
         code = str(getattr(exc, "code", "") or "")
         status = getattr(exc, "status", None)
+        details = str(getattr(exc, "details", "") or "")
+        if code == "23505" and "dispatch_movements_ism_unique" in f"{message} {details}":
+            raise FleetManagementError(
+                "This ISM number is already assigned to a movement. Check the movement "
+                "queues for an existing departure or enter the correct unique ISM number."
+            ) from exc
         if code == "PGRST202":
             raise FleetManagementError(
                 f"Dispatch database function '{function_name}' is missing. "
@@ -663,7 +669,7 @@ def dispatch_movements() -> Any:
                 return _json_error("Select a valid movement queue.", 400)
             if page < 1 or page_size < 1 or page_size > 100:
                 return _json_error("Invalid movement page request.", 400)
-            result = _dispatch_rpc("list_dispatch_movements_page", {
+            result = _dispatch_rpc("list_dispatch_movements_page_with_load_items", {
                 "p_queue": queue,
                 "p_page": page,
                 "p_page_size": page_size,
@@ -682,7 +688,27 @@ def dispatch_movements() -> Any:
 
     try:
         payload = _body()
-        movement_id = _dispatch_rpc("create_dispatch_movement", {
+        raw_load_items = payload.get("load_items", [])
+        if not isinstance(raw_load_items, list) or len(raw_load_items) > 100:
+            raise ValueError("Load items must be a list of no more than 100 products")
+        load_items: list[dict[str, int]] = []
+        product_ids: set[int] = set()
+        for item in raw_load_items:
+            if not isinstance(item, dict):
+                raise ValueError("Each load item must include a product and quantity")
+            product_id = _integer(item, "product_id")
+            pallet_quantity = _integer(item, "pallet_quantity")
+            if product_id < 1 or pallet_quantity < 1:
+                raise ValueError("Product IDs and pallet quantities must be positive")
+            if product_id in product_ids:
+                raise ValueError("A product can only be listed once in the load")
+            product_ids.add(product_id)
+            load_items.append({
+                "product_id": product_id,
+                "pallet_quantity": pallet_quantity,
+            })
+
+        movement_id = _dispatch_rpc("create_dispatch_movement_with_load", {
             "p_origin_location_id": _required_text(payload, "origin_location_id").upper(),
             "p_destination_location_id": _required_text(payload, "destination_location_id").upper(),
             "p_ism_no": _required_text(payload, "ism_no"),
@@ -695,12 +721,22 @@ def dispatch_movements() -> Any:
             "p_fuel_allocation": _optional_number(payload, "fuel_allocation"),
             "p_actual_fuel_expense": _optional_number(payload, "actual_fuel_expense"),
             "p_fuel_remarks": _optional_text(payload, "fuel_remarks"),
+            "p_load_items": load_items,
         })
     except ValueError as exc:
         return _json_error(str(exc), 400)
     except FleetManagementError as exc:
         return _dispatch_error_response(exc)
     return jsonify({"id": movement_id}), 201
+
+
+@app.route("/api/dispatch/load-catalog")
+def dispatch_load_catalog() -> Any:
+    try:
+        products = _dispatch_rpc("list_dispatch_load_catalog") or []
+    except FleetManagementError as exc:
+        return _dispatch_error_response(exc)
+    return jsonify({"products": products})
 
 
 @app.route("/api/dispatch/movements/<uuid:movement_id>/verify", methods=["POST"])

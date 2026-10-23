@@ -109,6 +109,122 @@ class TripDeletionTests(unittest.TestCase):
         self.assertIn('data-action="delete"', app_js)
 
 
+class LoadCatalogIntegrationTests(unittest.TestCase):
+    def test_load_catalog_route_uses_authenticated_dispatch_rpc(self):
+        products = [{"id": 1, "section": "CAN", "brand": "COKE", "quantity": 24}]
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "_dispatch_rpc", return_value=products) as dispatch_rpc:
+            response = web_app.app.test_client().get("/api/dispatch/load-catalog")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {"products": products})
+        dispatch_rpc.assert_called_once_with("list_dispatch_load_catalog")
+
+    def test_dispatch_create_sends_selected_catalog_products_to_atomic_rpc(self):
+        payload = {
+            "origin_location_id": "dav3",
+            "destination_location_id": "dav4",
+            "ism_no": "ISM-100",
+            "truck_id": "12",
+            "driver_id": "34",
+            "trailer_id": "56",
+            "load_type": "FULLS",
+            "pallet_quantity": "8",
+            "departure_at": "2026-10-23T10:00",
+            "load_items": [{"product_id": "7", "pallet_quantity": "3"}],
+        }
+        with web_app.app.test_request_context(
+            "/api/dispatch/movements", method="POST", json=payload
+        ), patch.object(web_app, "_dispatch_rpc", return_value="movement-id") as dispatch_rpc:
+            response, status = web_app.dispatch_movements()
+
+        self.assertEqual(status, 201)
+        self.assertEqual(response.get_json(), {"id": "movement-id"})
+        self.assertEqual(dispatch_rpc.call_args.args[0], "create_dispatch_movement_with_load")
+        self.assertEqual(
+            dispatch_rpc.call_args.args[1]["p_load_items"],
+            [{"product_id": 7, "pallet_quantity": 3}],
+        )
+
+    def test_dispatch_create_rejects_duplicate_catalog_products(self):
+        payload = {
+            "load_items": [
+                {"product_id": 7, "pallet_quantity": 1},
+                {"product_id": 7, "pallet_quantity": 2},
+            ],
+        }
+        with web_app.app.test_request_context(
+            "/api/dispatch/movements", method="POST", json=payload
+        ), patch.object(web_app, "_dispatch_rpc") as dispatch_rpc:
+            response, status = web_app.dispatch_movements()
+
+        self.assertEqual(status, 400)
+        self.assertIn("listed once", response.get_json()["error"])
+        dispatch_rpc.assert_not_called()
+
+    def test_load_catalog_migration_connects_products_to_dispatch_movements(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_dispatch_load_catalog_migration.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+
+        self.assertIn("add column if not exists load_items jsonb", migration)
+        self.assertIn("create or replace function public.create_dispatch_movement_with_load", migration)
+        self.assertIn("create or replace function public.list_dispatch_load_catalog", migration)
+        self.assertIn("'load_items', coalesce(movement.load_items", migration)
+        self.assertIn("'pallet_quantity', (item.value ->> 'pallet_quantity')::integer", migration)
+        self.assertIn("per-product pallet_quantity", migration)
+
+    def test_missing_load_catalog_route_has_restart_guidance(self):
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+
+        catalog_loader = app_js.split(
+            "async function loadDispatchLoadCatalog", 1
+        )[1].split("function dispatchStatusLabel", 1)[0]
+        self.assertIn('error.message === "Not found"', catalog_loader)
+        self.assertIn("Restart or redeploy the Flask app", catalog_loader)
+
+    def test_dispatch_departure_form_uses_seven_step_product_card_wizard(self):
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+
+        departure_form = app_js.split(
+            "function dispatchDepartureForm()", 1
+        )[1].split("function dispatchAdminSetup", 1)[0]
+        catalog_markup = app_js.split(
+            "function dispatchProductCatalogMarkup()", 1
+        )[1].split("function renderDispatchLoadSelection", 1)[0]
+        self.assertEqual(
+            sum(f'data-step="{step}"' in departure_form for step in range(7)),
+            7,
+        )
+        self.assertIn("dispatch-wizard-continue", app_js)
+        self.assertIn("dispatch-wizard-back", app_js)
+        self.assertIn("dispatch-wizard-review", departure_form)
+        self.assertIn('data-dispatch-wizard-description>', departure_form)
+        self.assertIn('form.querySelector("[data-dispatch-wizard-description]")', app_js)
+        self.assertIn("function refreshDispatchCatalogStage(form)", app_js)
+        self.assertNotIn('name="load_product_id"', departure_form)
+        self.assertIn("dispatch-select-load-product", catalog_markup)
+        self.assertIn("dispatch-adjust-load-product", catalog_markup)
+        self.assertIn("loadCatalogSearch", catalog_markup)
+        self.assertIn("loadCatalogSection", catalog_markup)
+        self.assertIn("Selected pallet quantity", catalog_markup)
+        self.assertIn('Number(selected.pallet_quantity) === 1 ? "pallet" : "pallets"', catalog_markup)
+        self.assertIn('value="EMPTIES"', departure_form)
+        self.assertIn('value="FULLS"', departure_form)
+
+
 class PayrollCalculationTests(unittest.TestCase):
     def test_manifest_fields_are_extracted_from_reference_layout(self):
         text = """
@@ -215,7 +331,7 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertEqual(response.json["movements"], movements)
         self.assertEqual(response.json["total"], 1)
         dispatch_rpc.assert_called_once_with(
-            "list_dispatch_movements_page",
+            "list_dispatch_movements_page_with_load_items",
             {
                 "p_queue": "arrivals",
                 "p_page": 2,
@@ -276,6 +392,17 @@ class PayrollCalculationTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(FleetManagementError, "specific database failure"):
                 web_app._dispatch_rpc("list_dispatch_locations")
+
+        duplicate_ism_error = DispatchDatabaseError(
+            "23505",
+            'duplicate key value violates unique constraint "dispatch_movements_ism_unique"',
+        )
+        with patch.object(web_app, "get_dispatch_client", side_effect=duplicate_ism_error):
+            with self.assertRaisesRegex(
+                FleetManagementError,
+                "ISM number is already assigned to a movement",
+            ):
+                web_app._dispatch_rpc("create_dispatch_movement_with_load")
 
     def test_dispatchers_cannot_create_legacy_financial_trip_rows(self):
         with web_app.app.test_request_context("/api/trips", method="POST"):
@@ -348,7 +475,7 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('app.js?v=location-dispatch-9', index_html)
+        self.assertIn('app.js?v=location-dispatch-19', index_html)
         self.assertIn("window.setTimeout(() => controller.abort(), 20000)", app_js)
         self.assertIn("The dispatch service did not respond within 20 seconds.", app_js)
         render_workflow = app_js.split("function renderDispatchWorkflow() {", 1)[1].split(

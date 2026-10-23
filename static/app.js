@@ -314,6 +314,25 @@ const state = {
     search: "",
     page: 1,
     departureOrigin: "",
+    loadCatalog: [],
+    loadCatalogLoaded: false,
+    loadCatalogLoading: false,
+    loadCatalogError: "",
+    loadCatalogSearch: "",
+    loadCatalogSection: "",
+    departureLoadItems: [],
+    departureWizardStep: 0,
+    departureDriver: "",
+    departureTruck: "",
+    departureTrailer: "",
+    departureDestination: "",
+    departureLoadType: "",
+    departurePalletQuantity: "",
+    departureIsm: "",
+    departureAt: "",
+    departureFuelAllocation: "",
+    departureFuelExpense: "",
+    departureFuelRemarks: "",
     previewUrls: {},
     dashboard: {
       arrivals: [],
@@ -1032,29 +1051,31 @@ function renderDispatcherDashboard(data, summary) {
         <p class="dispatcher-queue-note">Queue totals reflect your location permissions. A movement may appear in both queues when your account is authorized at both locations.</p>
       </section>
 
-      <section class="dispatcher-priority-panel" aria-labelledby="dispatcher-priority-title">
-        <div class="dispatcher-section-heading">
-          <div><p class="eyebrow">PRIORITY ACTIONS</p><h2 id="dispatcher-priority-title">Arrivals to handle</h2></div>
-          <button class="button button-secondary button-small" type="button" data-action="dispatcher-dashboard-retry">Refresh</button>
-        </div>
-        ${priorityContent}
-      </section>
+      <div class="dispatcher-queues-grid">
+        <section class="dispatcher-priority-panel" aria-labelledby="dispatcher-priority-title">
+          <div class="dispatcher-section-heading">
+            <div><p class="eyebrow">PRIORITY ACTIONS</p><h2 id="dispatcher-priority-title">Arrivals to handle</h2></div>
+            <button class="button button-secondary button-small" type="button" data-action="dispatcher-dashboard-retry">Refresh</button>
+          </div>
+          ${priorityContent}
+        </section>
 
-      <section class="dispatcher-active-panel" aria-labelledby="dispatcher-active-title">
-        <div class="dispatcher-section-heading">
-          <div><p class="eyebrow">IN TRANSIT</p><h2 id="dispatcher-active-title">Open outbound movements</h2></div>
-          <button class="text-button" type="button" data-action="dispatcher-open-queue" data-tab="departures">View outbound queue →</button>
-        </div>
-        ${!dashboard.loaded && !dashboard.error
-          ? '<div class="dispatcher-dashboard-state" role="status">Loading active movements…</div>'
-          : dashboard.departures.length
-            ? `<div class="dispatch-movement-list dispatcher-active-list">
-                ${dashboard.departures.slice(0, 3).map((movement) => dispatchMovementCard(movement, "departures")).join("")}
-              </div>`
-            : dashboard.error && !dashboard.loaded
-              ? ""
-              : '<div class="dispatcher-dashboard-state"><strong>No open outbound movements</strong><span>Movements created from your assigned locations will appear here.</span></div>'}
-      </section>
+        <section class="dispatcher-active-panel" aria-labelledby="dispatcher-active-title">
+          <div class="dispatcher-section-heading">
+            <div><p class="eyebrow">IN TRANSIT</p><h2 id="dispatcher-active-title">Open outbound movements</h2></div>
+            <button class="text-button" type="button" data-action="dispatcher-open-queue" data-tab="departures">View outbound queue →</button>
+          </div>
+          ${!dashboard.loaded && !dashboard.error
+            ? '<div class="dispatcher-dashboard-state" role="status">Loading active movements…</div>'
+            : dashboard.departures.length
+              ? `<div class="dispatch-movement-list dispatcher-active-list">
+                  ${dashboard.departures.slice(0, 3).map((movement) => dispatchMovementCard(movement, "departures")).join("")}
+                </div>`
+              : dashboard.error && !dashboard.loaded
+                ? ""
+                : '<div class="dispatcher-dashboard-state"><strong>No open outbound movements</strong><span>Movements created from your assigned locations will appear here.</span></div>'}
+        </section>
+      </div>
 
       <details class="dispatcher-records">
         <summary>My other records</summary>
@@ -2375,6 +2396,32 @@ async function loadDispatchWorkflow({ force = false } = {}) {
   }
 }
 
+async function loadDispatchLoadCatalog({ force = false } = {}) {
+  if (state.dispatch.loadCatalogLoading
+      || (state.dispatch.loadCatalogLoaded && !force)) return;
+  state.dispatch.loadCatalogLoading = true;
+  state.dispatch.loadCatalogError = "";
+  try {
+    const result = await api("/api/dispatch/load-catalog");
+    if (!Array.isArray(result.products)) {
+      throw new Error("The load catalog response was invalid.");
+    }
+    state.dispatch.loadCatalog = result.products;
+    state.dispatch.loadCatalogLoaded = true;
+  } catch (error) {
+    state.dispatch.loadCatalogError = error.message === "Not found"
+      ? "The running app server does not have the load-catalog API yet. Restart or redeploy the Flask app, then retry."
+      : error.message || "Could not load the product catalog.";
+  } finally {
+    state.dispatch.loadCatalogLoading = false;
+    if (state.page === "trips"
+        && window.location.pathname === "/dispatcher/add-trip"
+        && !window.location.hash) {
+      refreshDispatchCatalogStage(view.querySelector(".dispatch-departure-form"));
+    }
+  }
+}
+
 function dispatchStatusLabel(status) {
   return ({
     awaiting_arrival: "Awaiting Arrival",
@@ -2406,6 +2453,187 @@ function dispatchLocalDateTimeNow() {
   return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
 }
 
+function dispatchLoadItemsMarkup() {
+  const items = state.dispatch.departureLoadItems;
+  if (!items.length) return '<p class="dispatch-load-empty">No products added yet.</p>';
+  return `<ul class="dispatch-load-item-list">${items.map((item) => {
+    const product = state.dispatch.loadCatalog.find(
+      (candidate) => Number(candidate.id) === Number(item.product_id),
+    );
+    if (!product) return "";
+    return `<li><span><strong>${escapeHtml(product.brand)}</strong><small>${escapeHtml(product.section)}${product.packing ? ` · ${escapeHtml(product.packing)}` : ""}${product.quantity == null ? "" : ` · ${formatNumber(product.quantity)} units in pack`}</small></span><span class="dispatch-load-item-quantity">${formatNumber(item.pallet_quantity)} ${Number(item.pallet_quantity) === 1 ? "pallet" : "pallets"}</span><button class="button button-secondary button-small" type="button" data-action="dispatch-remove-load-item" data-product-id="${escapeHtml(product.id)}" aria-label="Remove ${escapeHtml(product.brand)}">Remove</button></li>`;
+  }).join("")}</ul>`;
+}
+
+function dispatchProductCatalogMarkup() {
+  const sections = [...new Set(state.dispatch.loadCatalog.map((product) => product.section))];
+  const search = state.dispatch.loadCatalogSearch.trim().toLocaleLowerCase();
+  const products = state.dispatch.loadCatalog.filter((product) =>
+    (!state.dispatch.loadCatalogSection || product.section === state.dispatch.loadCatalogSection)
+    && (!search || `${product.brand} ${product.section} ${product.packing}`.toLocaleLowerCase().includes(search)),
+  );
+  const sectionFilters = [
+    `<button class="dispatch-catalog-filter ${state.dispatch.loadCatalogSection ? "" : "is-active"}" type="button" data-action="dispatch-load-section" data-section="" aria-pressed="${!state.dispatch.loadCatalogSection}">All products</button>`,
+    ...sections.map((section) =>
+      `<button class="dispatch-catalog-filter ${state.dispatch.loadCatalogSection === section ? "is-active" : ""}" type="button" data-action="dispatch-load-section" data-section="${escapeHtml(section)}" aria-pressed="${state.dispatch.loadCatalogSection === section}">${escapeHtml(section)}</button>`,
+    ),
+  ].join("");
+  const cards = products.length
+    ? `<div class="dispatch-product-grid">${products.map((product) => {
+      const selected = state.dispatch.departureLoadItems.find(
+        (item) => Number(item.product_id) === Number(product.id),
+      );
+      return `<article class="dispatch-product-card ${selected ? "is-selected" : ""}">
+        <button class="dispatch-product-card-select" type="button" data-action="dispatch-select-load-product" data-product-id="${escapeHtml(product.id)}" aria-pressed="${Boolean(selected)}">
+          <span class="dispatch-product-visual"><span class="dispatch-product-art" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="M8 15.5 24 7l16 8.5v18L24 42 8 33.5v-18Z"/><path d="m8.5 15.7 15.5 8.5 15.5-8.5M24 24v17.5M16 11.3l16 8.8"/></svg></span>${selected ? '<span class="dispatch-product-selected-badge"><span aria-hidden="true">✓</span> Selected</span>' : ""}</span>
+          <span class="dispatch-product-card-copy"><span class="dispatch-product-section">${escapeHtml(product.section)}</span><strong>${escapeHtml(product.brand)}</strong><span>${product.packing ? escapeHtml(product.packing) : "Packing not specified"}</span>${product.quantity == null ? "" : `<small>${formatNumber(product.quantity)} units in pack</small>`}</span>
+        </button>
+        ${selected ? `<div class="dispatch-product-quantity" aria-label="Selected pallet quantity">
+          <button class="dispatch-product-quantity-button" type="button" data-action="dispatch-adjust-load-product" data-product-id="${escapeHtml(product.id)}" data-delta="-1" aria-label="Remove one pallet of ${escapeHtml(product.brand)}" ${selected.pallet_quantity <= 1 ? "disabled" : ""}>−</button>
+          <span>${formatNumber(selected.pallet_quantity)} ${Number(selected.pallet_quantity) === 1 ? "pallet" : "pallets"}</span>
+          <button class="dispatch-product-quantity-button" type="button" data-action="dispatch-adjust-load-product" data-product-id="${escapeHtml(product.id)}" data-delta="1" aria-label="Add one pallet of ${escapeHtml(product.brand)}">+</button>
+        </div>` : ""}
+      </article>`;
+    }).join("")}</div>`
+    : '<p class="dispatch-catalog-empty">No products match your search. Try a different name or section.</p>';
+  return `<div class="dispatch-catalog-toolbar">
+      <label class="search-box dispatch-catalog-search"><span class="sr-only">Search load products</span><span aria-hidden="true">⌕</span><input type="search" name="load_catalog_search" placeholder="Search products or packing" value="${escapeHtml(state.dispatch.loadCatalogSearch)}" autocomplete="off" /></label>
+      <div class="dispatch-catalog-filters" role="group" aria-label="Filter load products by section">${sectionFilters}</div>
+    </div>
+    <div class="dispatch-product-results" aria-live="polite">${cards}</div>`;
+}
+
+function renderDispatchLoadSelection(form) {
+  const selected = form.querySelectorAll(".dispatch-selected-load");
+  const hiddenInput = form.elements.namedItem("load_items");
+  selected.forEach((container) => {
+    container.innerHTML = container.closest(".dispatch-wizard-step")?.dataset.step === "4"
+      && form.elements.namedItem("load_type").value === "EMPTIES"
+      ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>'
+      : dispatchLoadItemsMarkup();
+  });
+  const catalog = form.querySelector(".dispatch-product-catalog");
+  if (catalog) catalog.innerHTML = dispatchProductCatalogMarkup();
+  if (hiddenInput) {
+    hiddenInput.value = JSON.stringify(
+      form.elements.namedItem("load_type").value === "FULLS"
+        ? state.dispatch.departureLoadItems
+        : [],
+    );
+  }
+}
+
+function dispatchCatalogStepMarkup() {
+  if (state.dispatch.loadCatalogLoading) {
+    return '<p class="dispatch-catalog-empty" role="status">Loading load catalog…</p>';
+  }
+  if (state.dispatch.loadCatalogError) {
+    return `<div class="dispatch-load-catalog-error" role="alert"><p>${escapeHtml(state.dispatch.loadCatalogError)}</p><button class="button button-secondary button-small" type="button" data-action="dispatch-load-catalog-retry">Retry</button></div>`;
+  }
+  if (!state.dispatch.loadCatalog.length) {
+    return '<p class="dispatch-catalog-empty">No active products are available in the load catalog.</p>';
+  }
+  return `<div class="dispatch-product-catalog">${dispatchProductCatalogMarkup()}</div>`;
+}
+
+function refreshDispatchCatalogStage(form) {
+  const stage = form?.querySelector(".dispatch-catalog-stage");
+  if (stage) stage.innerHTML = dispatchCatalogStepMarkup();
+}
+
+function dispatchWizardReviewMarkup(form) {
+  const value = (name) => form.elements.namedItem(name)?.value || "Not provided";
+  const labelFor = (name, id) => {
+    const options = [...(form.elements.namedItem(name)?.options || [])];
+    return options.find((option) => option.value === id)?.textContent.trim() || id || "Not selected";
+  };
+  const productSummary = value("load_type") === "EMPTIES"
+    ? "Empty containers (product selection not required)"
+    : state.dispatch.departureLoadItems.map((item) => {
+      const product = state.dispatch.loadCatalog.find(
+        (candidate) => Number(candidate.id) === Number(item.product_id),
+      );
+      return product
+        ? `${product.section} · ${product.brand}${product.packing ? ` (${product.packing})` : ""} — ${formatNumber(item.pallet_quantity)} ${Number(item.pallet_quantity) === 1 ? "pallet" : "pallets"}`
+        : "";
+    }).filter(Boolean).join(", ") || "No products selected";
+  const manifest = form.elements.namedItem("departure_manifest").files?.[0]?.name || "Not attached";
+  const invoice = form.elements.namedItem("fuel_invoice").files?.[0]?.name || "Not attached";
+  const rows = [
+    ["Driver", labelFor("driver_id", value("driver_id"))],
+    ["Truck", labelFor("truck_id", value("truck_id"))],
+    ["Trailer", labelFor("trailer_id", value("trailer_id"))],
+    ["Route", `${labelFor("origin_location_id", value("origin_location_id"))} → ${labelFor("destination_location_id", value("destination_location_id"))}`],
+    ["Load type", value("load_type")],
+    ["Pallet quantity", value("pallet_quantity")],
+    ["Trailer contents", productSummary],
+    ["ISM number", value("ism_no")],
+    ["Departure time", value("departure_at")],
+    ["Fuel allocation", value("fuel_allocation")],
+    ["Actual fuel expense", value("actual_fuel_expense")],
+    ["Fuel remarks", value("fuel_remarks")],
+    ["Departure manifest", manifest],
+    ["Fuel invoice", invoice],
+  ];
+  return `<dl>${rows.map(([label, content]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(content)}</dd></div>`).join("")}</dl>`;
+}
+
+function setDispatchWizardStep(form, step, { focus = false } = {}) {
+  const stepDescriptions = [
+    "Choose the driver for this movement.",
+    "Assign an active truck and trailer.",
+    "Select an origin and an active destination route.",
+    "Choose the products this trailer will carry.",
+    "Record the load type and pallet quantity.",
+    "Enter departure references, fuel details, and documentation.",
+    "Review the movement details before recording it.",
+  ];
+  const steps = [...form.querySelectorAll(".dispatch-wizard-step")];
+  const index = Math.max(0, Math.min(step, steps.length - 1));
+  state.dispatch.departureWizardStep = index;
+  steps.forEach((section, sectionIndex) => {
+    section.hidden = sectionIndex !== index;
+  });
+  form.querySelector("[data-dispatch-wizard-current]").textContent = String(index + 1);
+  form.querySelector("[data-dispatch-wizard-description]").textContent = stepDescriptions[index];
+  form.querySelector(".dispatch-wizard-progress-wrap progress").value = index + 1;
+  form.querySelectorAll(".dispatch-wizard-progress-step").forEach((item, itemIndex) => {
+    item.classList.toggle("is-active", itemIndex === index);
+    item.classList.toggle("is-complete", itemIndex < index);
+    if (itemIndex === index) item.setAttribute("aria-current", "step");
+    else item.removeAttribute("aria-current");
+  });
+  form.querySelector('[data-action="dispatch-wizard-back"]').hidden = index === 0;
+  form.querySelector(".dispatch-wizard-cancel").hidden = index === steps.length - 1;
+  form.querySelector('[data-action="dispatch-wizard-continue"]').hidden = index === steps.length - 1;
+  form.querySelector(".dispatch-wizard-submit").hidden = index !== steps.length - 1;
+  const error = form.querySelector(".dispatch-form-error");
+  error.hidden = true;
+  if (index === steps.length - 1) {
+    form.querySelector(".dispatch-wizard-review").innerHTML = dispatchWizardReviewMarkup(form);
+  }
+  if (focus) steps[index].querySelector("h3")?.focus();
+}
+
+function validateDispatchWizardStep(form, stepIndex) {
+  const section = form.querySelector(`.dispatch-wizard-step[data-step="${stepIndex}"]`);
+  const error = form.querySelector(".dispatch-form-error");
+  error.hidden = true;
+  if (stepIndex === 4 && form.elements.namedItem("load_type").value === "FULLS"
+      && !state.dispatch.departureLoadItems.length) {
+    error.textContent = "Select at least one product in the Load Catalog step for a FULLS movement.";
+    error.hidden = false;
+    return false;
+  }
+  if (stepIndex === 4) validateDispatchPalletQuantity(form);
+  for (const field of section.querySelectorAll("input, select, textarea")) {
+    if (!field.required || field.disabled || field.checkValidity()) continue;
+    field.reportValidity();
+    return false;
+  }
+  return true;
+}
+
 function dispatchMovementCard(movement, mode) {
   const isAdmin = state.data.user?.role === "administrator";
   const isVerified = Boolean(movement.ism_no && movement.arrival_verified_at);
@@ -2419,11 +2647,21 @@ function dispatchMovementCard(movement, mode) {
       || state.dispatch.dashboard.locations.some(
         (location) => location.id === movement.origin_location_id && location.can_depart,
       ));
+  const contentSummary = Array.isArray(movement.load_items) && movement.load_items.length
+    ? movement.load_items.map((item) => {
+      const productLabel = `${item.brand}${item.packing ? ` (${item.packing})` : ""}`;
+      if (item.pallet_quantity != null) {
+        return `${productLabel} × ${formatNumber(item.pallet_quantity)} ${Number(item.pallet_quantity) === 1 ? "pallet" : "pallets"}`;
+      }
+      return `${productLabel} × ${formatNumber(item.quantity)} legacy quantity`;
+    }).join(", ")
+    : "No product details";
   const detailLines = [
     ["Truck", movement.truck_plate || `#${movement.truck_id}`],
     ["Driver", movement.driver_name || "—"],
     ["Trailer", movement.trailer_plate || `#${movement.trailer_id}`],
     ["Load", `${movement.load_type} · ${formatNumber(movement.pallet_quantity)} pallets`],
+    ["Contents", contentSummary],
     ["Departed", dispatchDateTime(movement.departure_at)],
     ...(movement.arrival_at ? [["Arrived", dispatchDateTime(movement.arrival_at)]] : []),
     ...(canViewIsm && movement.ism_no ? [["ISM", movement.ism_no]] : []),
@@ -2512,45 +2750,102 @@ function dispatchDepartureForm() {
   const drivers = (state.data.drivers || []).filter((item) =>
     item.status === "active",
   );
-  const canCreate = originOptions.length > 0 && uniqueDestinations.length > 0
-    && trucks.length > 0 && trailers.length > 0 && drivers.length > 0;
-  return `<section class="panel dispatch-form-panel">
-    <div class="panel-heading"><div><p class="eyebrow">NEW DEPARTURE</p><h2>Create a movement</h2></div></div>
+  const wizardSteps = [
+    "Driver", "Truck & Trailer", "Route", "Load Catalog",
+    "Load Details", "Departure Details", "Review",
+  ];
+  const progress = wizardSteps.map((title, index) => `
+    <li><span class="dispatch-wizard-progress-step" aria-label="Step ${index + 1}: ${title}">
+      <span>${index + 1}</span><small>${title}</small>
+    </span></li>`).join("");
+  const selectedTrailer = trailers.find(
+    (trailer) => String(trailer.id) === String(state.dispatch.departureTrailer || ""),
+  );
+  const selectedItems = state.dispatch.departureLoadItems;
+  const selectedContents = selectedItems.length
+    ? dispatchLoadItemsMarkup()
+    : '<p class="dispatch-load-empty">No products selected.</p>';
+  return `<section class="panel dispatch-form-panel dispatch-wizard-panel">
     ${!originOptions.length
       ? '<p class="empty-state">No departure location is assigned to this account. Ask an administrator to configure access.</p>'
       : ""}
-    <form class="dispatch-departure-form">
-      <div class="dialog-fields">
-        <label class="form-field"><span>Origin</span><select name="origin_location_id" data-dispatch-origin required>
-          ${originOptions.map((location) => `<option value="${escapeHtml(location.id)}" ${location.id === originId ? "selected" : ""}>${escapeHtml(location.name)} (${escapeHtml(location.id)})</option>`).join("")}
-        </select></label>
-        <label class="form-field"><span>Destination</span><select name="destination_location_id" required>
-          <option value="">Select destination</option>
-          ${uniqueDestinations.map((location) => `<option value="${escapeHtml(location.id)}">${escapeHtml(location.name)} (${escapeHtml(location.id)})</option>`).join("")}
-        </select></label>
-        <label class="form-field"><span>ISM number</span><input name="ism_no" required maxlength="120" autocomplete="off" /></label>
-        <label class="form-field"><span>Truck</span><select name="truck_id" required><option value="">Select truck</option>
-          ${trucks.map((truck) => `<option value="${escapeHtml(truck.id)}">${escapeHtml(truck.plate_number)} · ${escapeHtml(truck.make || "")} ${escapeHtml(truck.model || "")}</option>`).join("")}
-        </select></label>
-        <label class="form-field"><span>Driver</span><select name="driver_id" required><option value="">Select driver</option>
-          ${drivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join("")}
-        </select></label>
-        <label class="form-field"><span>Trailer</span><select name="trailer_id" required><option value="">Select trailer</option>
-          ${trailers.map((trailer) => `<option value="${escapeHtml(trailer.id)}">${escapeHtml(trailer.plate_number)} · ${escapeHtml(trailer.pallet_capacity || "Capacity unknown")}</option>`).join("")}
-        </select></label>
-        <label class="form-field"><span>Load type</span><select name="load_type" required><option value="">Select load type</option><option value="FULLS">FULLS</option><option value="EMPTIES">EMPTIES</option></select></label>
-        <label class="form-field"><span>Pallet quantity</span><input name="pallet_quantity" type="number" min="1" step="1" required /></label>
-        <label class="form-field"><span>Departure date and time</span><input name="departure_at" type="datetime-local" value="${dispatchLocalDateTimeNow()}" required /></label>
-        <label class="form-field"><span>Fuel allocation (₱)</span><input name="fuel_allocation" type="number" min="0" step="0.01" /></label>
-        <label class="form-field"><span>Actual fuel expense (₱)</span><input name="actual_fuel_expense" type="number" min="0" step="0.01" /></label>
-        <label class="form-field"><span>Fuel remarks</span><input name="fuel_remarks" maxlength="500" /></label>
-        <label class="form-field"><span>Departure manifest / required documentation</span><input name="departure_manifest" type="file" data-dispatch-preview="departure_manifest" accept="image/jpeg,image/png,image/webp" capture="environment" required /><img class="dispatch-image-preview" data-dispatch-preview="departure_manifest" alt="Departure document preview" hidden /></label>
-        <label class="form-field"><span>Fuel invoice (if applicable)</span><input name="fuel_invoice" type="file" data-dispatch-preview="fuel_invoice" accept="image/jpeg,image/png,image/webp" capture="environment" /><img class="dispatch-image-preview" data-dispatch-preview="fuel_invoice" alt="Fuel invoice preview" hidden /></label>
+    <form class="dispatch-departure-form" novalidate>
+      <header class="dispatch-wizard-header">
+        <div><p class="eyebrow">NEW DEPARTURE · STEP <span data-dispatch-wizard-current>1</span> OF ${wizardSteps.length}</p><h2 data-dispatch-wizard-title>Create a movement</h2><p data-dispatch-wizard-description>Choose the driver for this movement.</p></div>
+        <a class="button button-secondary" href="#trips">Cancel</a>
+      </header>
+      <div class="dispatch-wizard-progress-wrap"><progress max="${wizardSteps.length}" value="${state.dispatch.departureWizardStep + 1}" aria-label="Departure creation progress"></progress><ol>${progress}</ol></div>
+      <div class="dispatch-wizard-content">
+        <section class="dispatch-wizard-step" data-step="0" aria-labelledby="dispatch-step-title-0">
+          <h3 id="dispatch-step-title-0" tabindex="-1">Choose a driver</h3><p class="dispatch-wizard-instruction">Select the active driver assigned to this departure.</p>
+          <label class="form-field"><span>Driver</span><select name="driver_id" required><option value="">Select driver</option>
+            ${drivers.map((driver) => `<option value="${escapeHtml(driver.id)}" ${String(state.dispatch.departureDriver || "") === String(driver.id) ? "selected" : ""}>${escapeHtml(driver.name)}</option>`).join("")}
+          </select></label>
+        </section>
+        <section class="dispatch-wizard-step" data-step="1" aria-labelledby="dispatch-step-title-1" hidden>
+          <h3 id="dispatch-step-title-1" tabindex="-1">Choose truck and trailer</h3><p class="dispatch-wizard-instruction">Only active fleet vehicles are available for selection.</p>
+          <div class="dialog-fields">
+            <label class="form-field"><span>Truck</span><select name="truck_id" required><option value="">Select truck</option>
+              ${trucks.map((truck) => `<option value="${escapeHtml(truck.id)}" ${String(state.dispatch.departureTruck || "") === String(truck.id) ? "selected" : ""}>${escapeHtml(truck.plate_number)} · ${escapeHtml(truck.make || "")} ${escapeHtml(truck.model || "")}</option>`).join("")}
+            </select></label>
+            <label class="form-field"><span>Trailer</span><select name="trailer_id" required><option value="">Select trailer</option>
+              ${trailers.map((trailer) => `<option value="${escapeHtml(trailer.id)}" ${String(state.dispatch.departureTrailer || "") === String(trailer.id) ? "selected" : ""}>${escapeHtml(trailer.plate_number)} · ${escapeHtml(trailer.pallet_capacity || "Capacity unknown")} pallets</option>`).join("")}
+            </select></label>
+          </div>
+          <div class="dispatch-trailer-capacity" data-dispatch-trailer-capacity>${selectedTrailer ? `Selected trailer capacity: <strong>${formatNumber(selectedTrailer.pallet_capacity)} pallets</strong>` : "Select a trailer to see its pallet capacity."}</div>
+        </section>
+        <section class="dispatch-wizard-step" data-step="2" aria-labelledby="dispatch-step-title-2" hidden>
+          <h3 id="dispatch-step-title-2" tabindex="-1">Choose origin and destination</h3><p class="dispatch-wizard-instruction">Destinations are limited to active routes from your assigned departure location.</p>
+          <div class="dialog-fields">
+            <label class="form-field"><span>Origin</span><select name="origin_location_id" data-dispatch-origin required>
+              <option value="">Select origin</option>${originOptions.map((location) => `<option value="${escapeHtml(location.id)}" ${location.id === originId ? "selected" : ""}>${escapeHtml(location.name)} (${escapeHtml(location.id)})</option>`).join("")}
+            </select></label>
+            <label class="form-field"><span>Destination</span><select name="destination_location_id" required><option value="">Select destination</option>
+              ${uniqueDestinations.map((location) => `<option value="${escapeHtml(location.id)}" ${String(state.dispatch.departureDestination || "") === String(location.id) ? "selected" : ""}>${escapeHtml(location.name)} (${escapeHtml(location.id)})</option>`).join("")}
+            </select></label>
+          </div>
+        </section>
+        <section class="dispatch-wizard-step" data-step="3" aria-labelledby="dispatch-step-title-3" hidden>
+          <h3 id="dispatch-step-title-3" tabindex="-1">Browse the load catalog</h3><p class="dispatch-wizard-instruction">Select every product going on this trailer. Pack quantities can be adjusted on each selected card.</p>
+          <div class="dispatch-catalog-stage">${dispatchCatalogStepMarkup()}</div>
+          <div class="dispatch-selected-load" aria-live="polite">${selectedContents}</div>
+        </section>
+        <section class="dispatch-wizard-step" data-step="4" aria-labelledby="dispatch-step-title-4" hidden>
+          <h3 id="dispatch-step-title-4" tabindex="-1">Load type and pallet quantity</h3><p class="dispatch-wizard-instruction">Record whether this trailer carries full goods or empty containers, and enter its pallet count.</p>
+          <div class="dialog-fields">
+            <label class="form-field"><span>Load type</span><select name="load_type" required><option value="">Select load type</option><option value="FULLS" ${state.dispatch.departureLoadType === "FULLS" ? "selected" : ""}>FULLS</option><option value="EMPTIES" ${state.dispatch.departureLoadType === "EMPTIES" ? "selected" : ""}>EMPTIES</option></select></label>
+            <label class="form-field"><span>Pallet quantity</span><input name="pallet_quantity" type="number" min="1" step="1" required value="${escapeHtml(state.dispatch.departurePalletQuantity || "")}" /></label>
+          </div>
+          <div class="dispatch-trailer-capacity" data-dispatch-trailer-capacity>${selectedTrailer ? `Trailer capacity: <strong>${formatNumber(selectedTrailer.pallet_capacity)} pallets</strong>` : "Select a trailer in the previous step to view its capacity."}</div>
+          <section class="dispatch-load-summary" aria-labelledby="dispatch-load-summary-title"><h4 id="dispatch-load-summary-title">Selected trailer contents</h4><div class="dispatch-selected-load" aria-live="polite">${state.dispatch.departureLoadType === "EMPTIES" ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>' : selectedContents}</div></section>
+        </section>
+        <section class="dispatch-wizard-step" data-step="5" aria-labelledby="dispatch-step-title-5" hidden>
+          <h3 id="dispatch-step-title-5" tabindex="-1">Departure details and documentation</h3><p class="dispatch-wizard-instruction">Enter the departure reference and time, then attach the required departure manifest.</p>
+          <div class="dialog-fields">
+            <label class="form-field"><span>ISM number</span><input name="ism_no" required maxlength="120" autocomplete="off" value="${escapeHtml(state.dispatch.departureIsm || "")}" /></label>
+            <label class="form-field"><span>Departure date and time</span><input name="departure_at" type="datetime-local" value="${escapeHtml(state.dispatch.departureAt || dispatchLocalDateTimeNow())}" required /></label>
+            <label class="form-field"><span>Fuel allocation (₱)</span><input name="fuel_allocation" type="number" min="0" step="0.01" value="${escapeHtml(state.dispatch.departureFuelAllocation || "")}" /></label>
+            <label class="form-field"><span>Actual fuel expense (₱)</span><input name="actual_fuel_expense" type="number" min="0" step="0.01" value="${escapeHtml(state.dispatch.departureFuelExpense || "")}" /></label>
+            <label class="form-field"><span>Fuel remarks</span><input name="fuel_remarks" maxlength="500" value="${escapeHtml(state.dispatch.departureFuelRemarks || "")}" /></label>
+            <label class="form-field"><span>Departure manifest / required documentation</span><input name="departure_manifest" type="file" data-dispatch-preview="departure_manifest" accept="image/jpeg,image/png,image/webp" capture="environment" required /><img class="dispatch-image-preview" data-dispatch-preview="departure_manifest" alt="Departure document preview" hidden /></label>
+            <label class="form-field"><span>Fuel invoice (if applicable)</span><input name="fuel_invoice" type="file" data-dispatch-preview="fuel_invoice" accept="image/jpeg,image/png,image/webp" capture="environment" /><img class="dispatch-image-preview" data-dispatch-preview="fuel_invoice" alt="Fuel invoice preview" hidden /></label>
+          </div>
+        </section>
+        <section class="dispatch-wizard-step" data-step="6" aria-labelledby="dispatch-step-title-6" hidden>
+          <h3 id="dispatch-step-title-6" tabindex="-1">Review and confirm</h3><p class="dispatch-wizard-instruction">Review the departure details before recording the movement.</p>
+          <div class="dispatch-wizard-review" aria-live="polite"></div>
+        </section>
+        <p class="dialog-error dispatch-form-error" role="alert" hidden></p>
       </div>
-      <p class="dialog-error dispatch-form-error" role="alert" hidden></p>
-      <button class="button button-primary" type="submit" ${canCreate ? "" : "disabled"}>Save departure</button>
+      <footer class="dispatch-wizard-actions">
+        <button class="button button-secondary dispatch-wizard-back" type="button" data-action="dispatch-wizard-back" hidden>Back</button>
+        <a class="button button-secondary dispatch-wizard-cancel" href="#trips">Cancel</a>
+        <button class="button button-primary dispatch-wizard-continue" type="button" data-action="dispatch-wizard-continue">Continue</button>
+        <button class="button button-primary dispatch-wizard-submit" type="submit" hidden>Confirm and Record Departure</button>
+      </footer>
+      <p class="page-description dispatch-availability-message" role="status" hidden></p>
+      <input type="hidden" name="load_items" value="${escapeHtml(JSON.stringify(selectedItems))}" />
     </form>
-    <p class="page-description dispatch-availability-message" role="status" ${canCreate ? "hidden" : ""}>${!uniqueDestinations.length ? "No active route is configured from this origin." : "Active trucks, drivers, and trailers are required before a departure can be created."}</p>
   </section>`;
 }
 
@@ -2592,6 +2887,15 @@ function dispatchAdminSetup() {
 }
 
 function renderDispatchWorkflow() {
+  const isDispatcherAddTripPage = state.data.user?.role === "dispatcher"
+    && window.location.pathname === "/dispatcher/add-trip"
+    && !window.location.hash;
+  if (isDispatcherAddTripPage
+      && !state.dispatch.loadCatalogLoaded
+      && !state.dispatch.loadCatalogLoading
+      && !state.dispatch.loadCatalogError) {
+    loadDispatchLoadCatalog();
+  }
   if (state.dispatch.error && !state.dispatch.loaded) {
     return `${header("LOCATION DISPATCH", "Movement workflow", "Securely hand off each movement from departure through arrival.", '<button class="button button-secondary" data-action="dispatch-reload" type="button">Retry</button>')}<section class="error-card"><p>${escapeHtml(state.dispatch.error)}</p></section>`;
   }
@@ -2603,6 +2907,11 @@ function renderDispatchWorkflow() {
   }
 
   const isAdmin = state.data.user?.role === "administrator";
+  if (isDispatcherAddTripPage) {
+    return `${header("LOCATION DISPATCH", "Add Trip", "Create a new movement and submit its departure manifest.", '<a class="button button-secondary" href="#trips">Movement Queues</a>')}
+      ${dispatchDepartureForm()}`;
+  }
+
   const tab = state.dispatch.tab;
   const eligible = state.dispatch.movements;
   const pageSize = 25;
@@ -2624,7 +2933,6 @@ function renderDispatchWorkflow() {
   return `
     ${header("LOCATION DISPATCH", "Departure → Arrival", "One movement ID. The receiving dispatcher verifies the manifest before arrival; only admins finalize financial trips.", '<button class="button button-secondary" data-action="dispatch-reload" type="button">Refresh</button>')}
     ${isAdmin ? dispatchAdminSetup() : ""}
-    ${tab === "departures" ? dispatchDepartureForm() : ""}
     <section class="panel records-panel dispatch-queue-panel">
       <div class="panel-heading records-heading">
         <div><p class="eyebrow">MOVEMENT QUEUES</p><h2>${tab === "departures" ? "Departures" : tab === "arrivals" ? "Arrivals" : "Completed Trips"}</h2></div>
@@ -2665,9 +2973,17 @@ async function refreshDispatcherDispatchView() {
 
 async function submitDispatchDeparture(form) {
   if (form.dataset.submitting === "true") return;
+  const errorElement = form.querySelector(".dispatch-form-error");
+  if (form.elements.namedItem("load_type").value === "FULLS"
+      && !state.dispatch.departureLoadItems.length) {
+    setDispatchWizardStep(form, 3, { focus: true });
+    errorElement.textContent = "Add at least one product to the trailer contents.";
+    errorElement.hidden = false;
+    form.querySelector(".dispatch-product-card-select")?.focus();
+    return;
+  }
   form.dataset.submitting = "true";
   const submit = form.querySelector('button[type="submit"]');
-  const errorElement = form.querySelector(".dispatch-form-error");
   submit.disabled = true;
   submit.textContent = "Saving departure…";
   errorElement.hidden = true;
@@ -2686,6 +3002,9 @@ async function submitDispatchDeparture(form) {
           trailer_id: values.trailer_id,
           load_type: values.load_type,
           pallet_quantity: values.pallet_quantity,
+          load_items: values.load_type === "FULLS"
+            ? state.dispatch.departureLoadItems
+            : [],
           departure_at: values.departure_at,
           fuel_allocation: values.fuel_allocation || null,
           actual_fuel_expense: values.actual_fuel_expense || null,
@@ -2717,6 +3036,25 @@ async function submitDispatchDeparture(form) {
     showToast("Departure saved. It will enter the receiving queue with the required manifest.");
     state.dispatch.loaded = false;
     state.dispatch.loading = false;
+    state.dispatch.departureLoadItems = [];
+    state.dispatch.departureWizardStep = 0;
+    state.dispatch.departureDriver = "";
+    state.dispatch.departureTruck = "";
+    state.dispatch.departureTrailer = "";
+    state.dispatch.departureDestination = "";
+    state.dispatch.departureLoadType = "";
+    state.dispatch.departurePalletQuantity = "";
+    state.dispatch.departureIsm = "";
+    state.dispatch.departureAt = "";
+    state.dispatch.departureFuelAllocation = "";
+    state.dispatch.departureFuelExpense = "";
+    state.dispatch.departureFuelRemarks = "";
+    state.dispatch.loadCatalogSearch = "";
+    state.dispatch.loadCatalogSection = "";
+    if (window.location.pathname === "/dispatcher/add-trip" && !window.location.hash) {
+      window.location.hash = "trips";
+      return;
+    }
     await refreshDispatcherDispatchView();
   } catch (error) {
     errorElement.textContent = form.dataset.movementId
@@ -2727,7 +3065,9 @@ async function submitDispatchDeparture(form) {
     form.dataset.submitting = "false";
     if (submit.isConnected) {
       submit.disabled = false;
-      submit.textContent = form.dataset.movementId ? "Retry document upload" : "Save departure";
+      submit.textContent = form.dataset.movementId
+        ? "Retry document upload"
+        : "Confirm and Record Departure";
     }
   }
 }
@@ -2953,6 +3293,7 @@ function refreshDispatchDestinations(form) {
   if (destinations.some((location) => location.id === currentValue)) {
     destination.value = currentValue;
   }
+  state.dispatch.departureDestination = destination.value;
   updateDispatchDepartureAvailability(form);
 }
 
@@ -2960,7 +3301,7 @@ function updateDispatchDepartureAvailability(form) {
   const origin = form.elements.namedItem("origin_location_id")?.value || "";
   const destination = form.elements.namedItem("destination_location_id");
   const submit = form.querySelector('button[type="submit"]');
-  const message = form.parentElement?.querySelector(".dispatch-availability-message");
+  const message = form.querySelector(".dispatch-availability-message");
   if (!destination || !submit || !message) return;
 
   const hasActiveRoute = (state.data.truck_routes || []).some((route) =>
@@ -3872,6 +4213,12 @@ function render() {
       : state.page === "payroll" ? renderPayroll()
         : state.page === "revenue" ? revenueDashboardMarkup(state.revenue.report)
           : renderResource(state.page);
+  }
+  const dispatchDepartureForm = view.querySelector(".dispatch-departure-form");
+  if (dispatchDepartureForm) {
+    setDispatchWizardStep(dispatchDepartureForm, state.dispatch.departureWizardStep);
+    validateDispatchPalletQuantity(dispatchDepartureForm);
+    updateDispatchDepartureAvailability(dispatchDepartureForm);
   }
   if (state.page === "revenue" && !state.revenue.loading
       && state.revenue.reportKey !== revenueQueryKey()) {
@@ -4828,7 +5175,17 @@ view.addEventListener("submit", (event) => {
   const dispatchDeparture = event.target.closest(".dispatch-departure-form");
   if (dispatchDeparture) {
     event.preventDefault();
-    if (dispatchDeparture.reportValidity()) submitDispatchDeparture(dispatchDeparture);
+    if (dispatchDeparture.dataset.movementId) {
+      submitDispatchDeparture(dispatchDeparture);
+      return;
+    }
+    for (let step = 0; step < 6; step += 1) {
+      if (validateDispatchWizardStep(dispatchDeparture, step)) continue;
+      setDispatchWizardStep(dispatchDeparture, step, { focus: true });
+      return;
+    }
+    setDispatchWizardStep(dispatchDeparture, 6);
+    submitDispatchDeparture(dispatchDeparture);
     return;
   }
   const dispatchVerify = event.target.closest(".dispatch-verify-form");
@@ -4912,8 +5269,34 @@ view.addEventListener("submit", (event) => {
 
 view.addEventListener("input", (event) => {
   const dispatchForm = event.target.closest(".dispatch-departure-form");
-  if (dispatchForm && event.target.name === "pallet_quantity") {
-    validateDispatchPalletQuantity(dispatchForm);
+  if (dispatchForm) {
+    const stateFields = {
+      ism_no: "departureIsm",
+      departure_at: "departureAt",
+      fuel_allocation: "departureFuelAllocation",
+      actual_fuel_expense: "departureFuelExpense",
+      fuel_remarks: "departureFuelRemarks",
+      pallet_quantity: "departurePalletQuantity",
+    };
+    const stateField = stateFields[event.target.name];
+    if (stateField) state.dispatch[stateField] = event.target.value;
+    if (event.target.name === "pallet_quantity") validateDispatchPalletQuantity(dispatchForm);
+    if (event.target.name === "load_catalog_search") {
+      const position = event.target.selectionStart;
+      state.dispatch.loadCatalogSearch = event.target.value;
+      const catalog = dispatchForm.querySelector(".dispatch-product-catalog");
+      if (catalog) {
+        catalog.innerHTML = dispatchProductCatalogMarkup();
+        const searchInput = catalog.querySelector('[name="load_catalog_search"]');
+        searchInput?.focus();
+        searchInput?.setSelectionRange(position, position);
+      }
+      return;
+    }
+    if (state.dispatch.departureWizardStep === 6) {
+      dispatchForm.querySelector(".dispatch-wizard-review").innerHTML =
+        dispatchWizardReviewMarkup(dispatchForm);
+    }
   }
   const wizardForm = event.target.closest(".trip-wizard-form");
   if (wizardForm) {
@@ -5016,6 +5399,74 @@ view.addEventListener("click", (event) => {
     state.dispatch.page = 1;
     state.dispatch.loaded = false;
     loadDispatchWorkflow({ force: true });
+    return;
+  }
+  if (button.dataset.action === "dispatch-wizard-continue"
+      || button.dataset.action === "dispatch-wizard-back") {
+    const form = button.closest(".dispatch-departure-form");
+    if (!form) return;
+    const currentStep = state.dispatch.departureWizardStep;
+    if (button.dataset.action === "dispatch-wizard-back") {
+      setDispatchWizardStep(form, currentStep - 1, { focus: true });
+      return;
+    }
+    if (validateDispatchWizardStep(form, currentStep)) {
+      setDispatchWizardStep(form, currentStep + 1, { focus: true });
+    }
+    return;
+  }
+  if (button.dataset.action === "dispatch-select-load-product"
+      || button.dataset.action === "dispatch-adjust-load-product") {
+    const form = button.closest(".dispatch-departure-form");
+    if (!form) return;
+    const productId = Number(button.dataset.productId);
+    const existing = state.dispatch.departureLoadItems.find(
+      (item) => Number(item.product_id) === productId,
+    );
+    if (button.dataset.action === "dispatch-select-load-product") {
+      if (existing) {
+        state.dispatch.departureLoadItems = state.dispatch.departureLoadItems.filter(
+          (item) => Number(item.product_id) !== productId,
+        );
+      } else if (state.dispatch.loadCatalog.some((item) => Number(item.id) === productId)) {
+        state.dispatch.departureLoadItems.push({ product_id: productId, pallet_quantity: 1 });
+      }
+    } else if (existing) {
+      const nextQuantity = existing.pallet_quantity + Number(button.dataset.delta || 0);
+      if (nextQuantity < 1) {
+        state.dispatch.departureLoadItems = state.dispatch.departureLoadItems.filter(
+          (item) => Number(item.product_id) !== productId,
+        );
+      } else {
+        existing.pallet_quantity = nextQuantity;
+      }
+    }
+    renderDispatchLoadSelection(form);
+    form.querySelector(".dispatch-form-error").hidden = true;
+    return;
+  }
+  if (button.dataset.action === "dispatch-load-section") {
+    const form = button.closest(".dispatch-departure-form");
+    if (!form) return;
+    state.dispatch.loadCatalogSection = button.dataset.section || "";
+    const catalog = form.querySelector(".dispatch-product-catalog");
+    if (catalog) catalog.innerHTML = dispatchProductCatalogMarkup();
+    return;
+  }
+  if (button.dataset.action === "dispatch-remove-load-item") {
+    const form = button.closest(".dispatch-departure-form");
+    state.dispatch.departureLoadItems = state.dispatch.departureLoadItems.filter(
+      (item) => Number(item.product_id) !== Number(button.dataset.productId),
+    );
+    if (form) renderDispatchLoadSelection(form);
+    return;
+  }
+  if (button.dataset.action === "dispatch-load-catalog-retry") {
+    const form = button.closest(".dispatch-departure-form");
+    state.dispatch.loadCatalogLoaded = false;
+    state.dispatch.loadCatalogError = "";
+    loadDispatchLoadCatalog({ force: true });
+    refreshDispatchCatalogStage(form);
     return;
   }
   if (button.dataset.action === "dispatch-page") {
@@ -5359,11 +5810,52 @@ view.addEventListener("change", (event) => {
     updateTireAssetOptions(event.target.form);
   }
   if (event.target.matches("[data-dispatch-origin]")) {
+    state.dispatch.departureOrigin = event.target.value;
+    state.dispatch.departureDestination = "";
     refreshDispatchDestinations(event.target.form);
   }
-  if (event.target.form?.matches(".dispatch-departure-form")
-      && ["trailer_id", "pallet_quantity"].includes(event.target.name)) {
-    validateDispatchPalletQuantity(event.target.form);
+  const dispatchForm = event.target.form?.matches(".dispatch-departure-form")
+    ? event.target.form
+    : null;
+  if (dispatchForm) {
+    const stateFields = {
+      driver_id: "departureDriver",
+      truck_id: "departureTruck",
+      trailer_id: "departureTrailer",
+      destination_location_id: "departureDestination",
+      load_type: "departureLoadType",
+    };
+    const stateField = stateFields[event.target.name];
+    if (stateField) state.dispatch[stateField] = event.target.value;
+    if (event.target.name === "load_type") {
+      const emptySummary = dispatchForm.querySelector(
+        '.dispatch-wizard-step[data-step="4"] .dispatch-selected-load',
+      );
+      if (emptySummary) {
+        emptySummary.innerHTML = event.target.value === "EMPTIES"
+          ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>'
+          : dispatchLoadItemsMarkup();
+      }
+      renderDispatchLoadSelection(dispatchForm);
+      dispatchForm.querySelector(".dispatch-form-error").hidden = true;
+    }
+    if (["trailer_id", "pallet_quantity"].includes(event.target.name)) {
+      validateDispatchPalletQuantity(dispatchForm);
+    }
+    if (event.target.name === "trailer_id") {
+      const trailer = (state.data.trailers || []).find(
+        (item) => String(item.id) === String(event.target.value),
+      );
+      dispatchForm.querySelectorAll("[data-dispatch-trailer-capacity]").forEach((element) => {
+        element.innerHTML = trailer
+          ? `Trailer capacity: <strong>${formatNumber(trailer.pallet_capacity)} pallets</strong>`
+          : "Select a trailer to see its pallet capacity.";
+      });
+    }
+    if (state.dispatch.departureWizardStep === 6) {
+      dispatchForm.querySelector(".dispatch-wizard-review").innerHTML =
+        dispatchWizardReviewMarkup(dispatchForm);
+    }
   }
   const form = event.target.closest(".trip-wizard-form");
   if (!form) return;

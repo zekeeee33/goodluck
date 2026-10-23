@@ -305,10 +305,25 @@ shows a small preview of authorized arrival and outbound queues, and provides
 shortcuts to record departures or open pending arrivals. Queue counts and
 location names come from the authenticated dispatch endpoints; the dashboard
 requests only the first five movements per queue and leaves full filtering and
-pagination to the Trips workflow. ISM values remain hidden until the existing
+pagination to the Movement Queues page under Dispatch. ISM values remain hidden until the existing
 server-side verification flow permits them. The current movement model starts
 when a departure is recorded, so the dashboard labels those records as open
 outbound movements rather than presenting a separate pending-departure status.
+
+### Dispatcher load catalog
+
+The Add Trip departure form uses `public.load_catalog` for selectable trailer
+contents. Import the beverage list with `supabase_load_catalog_import.sql`, then
+run `supabase_dispatch_load_catalog_migration.sql` after the location dispatch
+migration. The migration adds catalog and movement RPCs so selected products,
+pack sizes, and per-product pallet quantities are saved atomically with each
+movement and shown in the movement queues. Add Trip presents departure entry as
+a seven-step wizard; its searchable, section-filtered product cards support
+multiple catalog items and count each selected product in pallets. The overall
+trailer pallet quantity remains a separate field. `FULLS` movements require at
+least one catalog product, while `EMPTIES` movements do not.
+If the migration was run previously, run it again after updating the app so the
+database RPC accepts and stores per-product `pallet_quantity` values.
 
 ### Tailwind CSS assets
 
