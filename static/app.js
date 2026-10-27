@@ -2569,8 +2569,8 @@ function dispatchWizardReviewMarkup(form) {
     ["Trailer contents", productSummary],
     ["ISM number", value("ism_no")],
     ["Departure time", value("departure_at")],
-    ["Fuel allocation", value("fuel_allocation")],
-    ["Actual fuel expense", value("actual_fuel_expense")],
+    ["Fuel allocation", value("fuel_allocation") ? `${formatNumber(value("fuel_allocation"))} L` : "Not entered"],
+    ["Actual fuel expense", value("actual_fuel_expense") ? `${formatCurrency(value("actual_fuel_expense"))}` : "Not entered"],
     ["Fuel remarks", value("fuel_remarks")],
     ["Departure manifest", manifest],
     ["Fuel invoice", invoice],
@@ -2710,6 +2710,9 @@ function dispatchMovementCard(movement, mode) {
         <button class="button button-secondary" type="submit">Send correction request</button>
       </form>`;
   }
+  if (isAdmin && mode === "completed" && movement.status === "completed") {
+    actions += `<button class="button button-secondary button-small" type="button" data-action="dispatch-delete-completed" data-id="${escapeHtml(movement.id)}" data-trip-id="${escapeHtml(movement.canonical_trip_id)}">Delete completed trip</button>`;
+  }
   return `<article class="panel dispatch-movement-card">
     <div class="dispatch-movement-heading">
       <div><p class="eyebrow">${escapeHtml(movement.origin_location_id)} → ${escapeHtml(movement.destination_location_id)}</p><h3>${escapeHtml(locationLine)}</h3></div>
@@ -2824,7 +2827,7 @@ function dispatchDepartureForm() {
           <div class="dialog-fields">
             <label class="form-field"><span>ISM number</span><input name="ism_no" required maxlength="120" autocomplete="off" value="${escapeHtml(state.dispatch.departureIsm || "")}" /></label>
             <label class="form-field"><span>Departure date and time</span><input name="departure_at" type="datetime-local" value="${escapeHtml(state.dispatch.departureAt || dispatchLocalDateTimeNow())}" required /></label>
-            <label class="form-field"><span>Fuel allocation (₱)</span><input name="fuel_allocation" type="number" min="0" step="0.01" value="${escapeHtml(state.dispatch.departureFuelAllocation || "")}" /></label>
+            <label class="form-field"><span>Fuel allocation (L)</span><input name="fuel_allocation" type="number" min="0" step="0.01" placeholder="Liters" value="${escapeHtml(state.dispatch.departureFuelAllocation || "")}" /></label>
             <label class="form-field"><span>Actual fuel expense (₱)</span><input name="actual_fuel_expense" type="number" min="0" step="0.01" value="${escapeHtml(state.dispatch.departureFuelExpense || "")}" /></label>
             <label class="form-field"><span>Fuel remarks</span><input name="fuel_remarks" maxlength="500" value="${escapeHtml(state.dispatch.departureFuelRemarks || "")}" /></label>
             <label class="form-field"><span>Departure manifest / required documentation</span><input name="departure_manifest" type="file" data-dispatch-preview="departure_manifest" accept="image/jpeg,image/png,image/webp" capture="environment" required /><img class="dispatch-image-preview" data-dispatch-preview="departure_manifest" alt="Departure document preview" hidden /></label>
@@ -2969,6 +2972,35 @@ async function refreshDispatcherDispatchView() {
   }
   state.dispatch.loaded = false;
   await loadDispatchWorkflow({ force: true });
+}
+
+async function deleteCompletedDispatchMovement(button) {
+  const movementId = button.dataset.id;
+  const tripId = button.dataset.tripId;
+  if (!movementId || !tripId || !window.confirm(
+    `Delete completed trip #${tripId}, its dispatch movement, audit history, and uploaded documents? This cannot be undone. Trips referenced by payroll or other protected financial records cannot be deleted.`,
+  )) return;
+
+  button.disabled = true;
+  try {
+    const result = await api(
+      `/api/dispatch/movements/${encodeURIComponent(movementId)}`,
+      { method: "DELETE" },
+    );
+    removeResourceRecord("trips", result.trip_id);
+    if (state.dispatch.page > 1 && state.dispatch.movements.length === 1) {
+      state.dispatch.page -= 1;
+    }
+    state.dispatch.loaded = false;
+    await loadDispatchWorkflow({ force: true });
+    showToast(
+      result.warning || "Completed trip deleted.",
+      result.warning ? "error" : "success",
+    );
+  } catch (error) {
+    showToast(error.message || "Could not delete the completed trip.", "error");
+    if (button.isConnected) button.disabled = false;
+  }
 }
 
 async function submitDispatchDeparture(form) {
@@ -5482,6 +5514,10 @@ view.addEventListener("click", (event) => {
   }
   if (button.dataset.action === "dispatch-finalize") {
     finalizeDispatchMovement(button);
+    return;
+  }
+  if (button.dataset.action === "dispatch-delete-completed") {
+    deleteCompletedDispatchMovement(button);
     return;
   }
   if (button.dataset.action === "dispatch-correction-toggle") {

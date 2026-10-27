@@ -869,6 +869,46 @@ def finalize_dispatch_movement(movement_id: uuid.UUID) -> Any:
     return jsonify({"trip_id": trip_id})
 
 
+@app.route("/api/dispatch/movements/<uuid:movement_id>", methods=["DELETE"])
+def delete_completed_dispatch_movement(movement_id: uuid.UUID) -> Any:
+    try:
+        result = _dispatch_rpc("delete_completed_dispatch_movement", {
+            "p_movement_id": str(movement_id),
+        })
+    except FleetManagementError as exc:
+        return _dispatch_error_response(exc)
+
+    if not isinstance(result, dict) or not result.get("trip_id"):
+        logger.error(
+            "Completed dispatch deletion returned an invalid response for %s.",
+            movement_id,
+        )
+        return _json_error("The completed trip could not be deleted. Please retry.", 503)
+
+    document_paths = result.get("document_paths") or []
+    warning = None
+    if document_paths:
+        try:
+            get_manager().client.storage.from_(
+                app.config["DOCUMENT_IMAGE_BUCKET"]
+            ).remove(document_paths)
+        except Exception:
+            logger.exception(
+                "Completed trip %s was deleted, but its documents could not be removed.",
+                movement_id,
+            )
+            warning = (
+                "The trip was deleted, but its uploaded documents could not be "
+                "removed. Contact your system administrator."
+            )
+
+    return jsonify({
+        "message": "Completed trip deleted.",
+        "trip_id": result["trip_id"],
+        "warning": warning,
+    })
+
+
 @app.route("/api/dispatch/movements/<uuid:movement_id>/correction", methods=["POST"])
 def request_dispatch_correction(movement_id: uuid.UUID) -> Any:
     try:

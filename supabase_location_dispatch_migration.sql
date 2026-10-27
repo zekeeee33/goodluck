@@ -1016,13 +1016,13 @@ begin
        or movement.fuel_remarks is not null
        or movement.fuel_invoice_path is not null then
         insert into public.fuel_logs (
-            vehicle_id, trip_id, fuel_type, total_cost, fuel_allocation,
+            vehicle_id, trip_id, fuel_type, quantity, total_cost, fuel_allocation,
             actual_expense, invoice_object_path, remarks, logged_on, created_by
         ) values (
-            movement.truck_id, created_trip_id, 'diesel',
+            movement.truck_id, created_trip_id, 'diesel', movement.fuel_allocation,
             coalesce(movement.actual_fuel_expense, 0)
                 + coalesce(movement.arrival_fuel_expense, 0),
-            movement.fuel_allocation,
+            null,
             coalesce(movement.actual_fuel_expense, 0)
                 + coalesce(movement.arrival_fuel_expense, 0),
             movement.fuel_invoice_path,

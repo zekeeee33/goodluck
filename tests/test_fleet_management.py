@@ -109,6 +109,63 @@ class TripDeletionTests(unittest.TestCase):
         self.assertIn('data-action="delete"', app_js)
 
 
+class CompletedDispatchDeletionTests(unittest.TestCase):
+    def test_completed_movement_delete_calls_admin_rpc(self):
+        movement_id = "5dd630a5-832d-4c28-89bf-2bf84c725cc7"
+        manager = SimpleNamespace(client=Mock())
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "get_manager", return_value=manager), patch.object(
+            web_app,
+            "_dispatch_rpc",
+            return_value={"trip_id": 42, "document_paths": []},
+        ) as dispatch_rpc:
+            client = web_app.app.test_client()
+            with client.session_transaction() as browser_session:
+                browser_session["csrf_token"] = "test-csrf-token"
+
+            response = client.delete(
+                f"/api/dispatch/movements/{movement_id}",
+                headers={"X-CSRF-Token": "test-csrf-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["trip_id"], 42)
+        dispatch_rpc.assert_called_once_with(
+            "delete_completed_dispatch_movement",
+            {"p_movement_id": movement_id},
+        )
+
+    def test_completed_dispatch_delete_warns_when_document_cleanup_fails(self):
+        movement_id = "5dd630a5-832d-4c28-89bf-2bf84c725cc7"
+        storage = Mock()
+        storage.from_.return_value.remove.side_effect = RuntimeError("storage unavailable")
+        manager = SimpleNamespace(client=SimpleNamespace(storage=storage))
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "get_manager", return_value=manager), patch.object(
+            web_app,
+            "_dispatch_rpc",
+            return_value={
+                "trip_id": 42,
+                "document_paths": ["movement/departure/document.jpg"],
+            },
+        ):
+            client = web_app.app.test_client()
+            with client.session_transaction() as browser_session:
+                browser_session["csrf_token"] = "test-csrf-token"
+
+            response = client.delete(
+                f"/api/dispatch/movements/{movement_id}",
+                headers={"X-CSRF-Token": "test-csrf-token"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("documents could not be removed", response.json["warning"])
+
+
 class LoadCatalogIntegrationTests(unittest.TestCase):
     def test_load_catalog_route_uses_authenticated_dispatch_rpc(self):
         products = [{"id": 1, "section": "CAN", "brand": "COKE", "quantity": 24}]
@@ -132,6 +189,8 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
             "trailer_id": "56",
             "load_type": "FULLS",
             "pallet_quantity": "8",
+            "fuel_allocation": "36.5",
+            "actual_fuel_expense": "2500",
             "departure_at": "2026-10-23T10:00",
             "load_items": [{"product_id": "7", "pallet_quantity": "3"}],
         }
@@ -147,6 +206,8 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
             dispatch_rpc.call_args.args[1]["p_load_items"],
             [{"product_id": 7, "pallet_quantity": 3}],
         )
+        self.assertEqual(dispatch_rpc.call_args.args[1]["p_fuel_allocation"], 36.5)
+        self.assertEqual(dispatch_rpc.call_args.args[1]["p_actual_fuel_expense"], 2500)
 
     def test_dispatch_create_rejects_duplicate_catalog_products(self):
         payload = {
@@ -177,6 +238,23 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
         self.assertIn("'load_items', coalesce(movement.load_items", migration)
         self.assertIn("'pallet_quantity', (item.value ->> 'pallet_quantity')::integer", migration)
         self.assertIn("per-product pallet_quantity", migration)
+
+    def test_dispatch_finalization_saves_fuel_allocation_as_liters(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_location_dispatch_migration.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+        finalization = migration.split(
+            "create or replace function public.finalize_dispatch_movement", 1
+        )[1]
+        fuel_log_insert = finalization.split("insert into public.fuel_logs", 1)[1].split(
+            ");", 1
+        )[0]
+
+        self.assertIn("vehicle_id, trip_id, fuel_type, quantity", fuel_log_insert)
+        self.assertIn("movement.fuel_allocation", fuel_log_insert)
+        self.assertIn("null,", fuel_log_insert)
 
     def test_missing_load_catalog_route_has_restart_guidance(self):
         app_js_path = os.path.join(
@@ -475,7 +553,7 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('app.js?v=location-dispatch-19', index_html)
+        self.assertIn('app.js?v=location-dispatch-20', index_html)
         self.assertIn("window.setTimeout(() => controller.abort(), 20000)", app_js)
         self.assertIn("The dispatch service did not respond within 20 seconds.", app_js)
         render_workflow = app_js.split("function renderDispatchWorkflow() {", 1)[1].split(
