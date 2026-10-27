@@ -716,7 +716,10 @@ async function api(path, options = {}) {
     if (response.status === 401) {
       returnToSignIn(payload.error?.toLowerCase().includes("inactivity"));
     }
-    throw new Error(payload.error || `Request failed (${response.status})`);
+    const fallback = response.status === 413
+      ? "The upload is too large for this server. Choose a smaller image and retry."
+      : `Request failed (${response.status})`;
+    throw new Error(payload.error || fallback);
   }
   return payload;
 }
@@ -2957,11 +2960,68 @@ async function uploadDispatchDocument(movementId, kind, file) {
     throw new Error(`${kind === "arrival" ? "Arrival" : "Departure"} documentation is required.`);
   }
   const body = new FormData();
-  body.append("image", file);
+  body.append("image", await prepareDispatchDocument(file));
   await api(
     `/api/dispatch/movements/${encodeURIComponent(movementId)}/documents/${kind}`,
     { method: "POST", body },
   );
+}
+
+async function prepareDispatchDocument(file) {
+  const maxRequestImageBytes = 3 * 1024 * 1024;
+  if (file.size <= maxRequestImageBytes) return file;
+  if (typeof createImageBitmap !== "function") {
+    throw new Error("This image is too large to upload from this browser. Choose a smaller image.");
+  }
+
+  let bitmap;
+  try {
+    bitmap = await createImageBitmap(file);
+    const sourceMaxDimension = Math.max(bitmap.width, bitmap.height);
+    const dimensions = [...new Set(
+      [2200, 1760, 1408, 1126].map((dimension) =>
+        Math.min(dimension, sourceMaxDimension),
+      ),
+    )];
+    for (const maxDimension of dimensions) {
+      const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("Image compression is not available in this browser.");
+      context.fillStyle = "#fff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+
+      for (const quality of [0.84, 0.74, 0.64]) {
+        const compressed = await new Promise((resolve, reject) => {
+          canvas.toBlob(
+            (blob) => blob
+              ? resolve(blob)
+              : reject(new Error("Could not compress this image for upload.")),
+            "image/jpeg",
+            quality,
+          );
+        });
+        if (compressed.size <= maxRequestImageBytes) {
+          const baseName = file.name.replace(/\.[^.]+$/, "") || "dispatch-document";
+          return new File([compressed], `${baseName}.jpg`, {
+            type: "image/jpeg",
+            lastModified: file.lastModified,
+          });
+        }
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message === "Could not compress this image for upload.") {
+      throw error;
+    }
+    throw new Error("Could not prepare this image for upload. Choose a smaller image and retry.");
+  } finally {
+    bitmap?.close();
+  }
+  throw new Error("This image could not be reduced enough to upload. Choose a smaller image and retry.");
 }
 
 async function refreshDispatcherDispatchView() {

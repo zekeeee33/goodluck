@@ -169,6 +169,9 @@ the dispatcher who created each record. The dedicated trip-entry page is
 available at `/dispatcher/add-trip` and opens the same verified trip wizard and
 business logic used in the in-app Add Trip flow.
 
+Dispatch manifest and invoice images larger than 3 MB are resized and
+compressed in the browser before upload to fit serverless request-size limits.
+
 Trip entry accepts an optional load-manifest image, and fuel-log entry accepts
 an optional invoice image. JPG, PNG, and WEBP files are decoded and validatedon the server and limited to 10 MB by default. Set
 `DOCUMENT_IMAGE_MAX_BYTES` to change the server-side per-image limit (up to the
