@@ -22,14 +22,18 @@ def _normalized_driver_name(value: Any) -> str:
     return " ".join(str(value or "").split()).casefold()
 
 
-def trip_rate(origin: str | None, destination: str | None) -> Decimal | None:
+def trip_rate(
+    origin: str | None,
+    destination: str | None,
+    allowances: dict[str, Decimal] | None = None,
+) -> Decimal | None:
     if not origin or not destination:
         return None
     route = frozenset((origin.strip().upper(), destination.strip().upper()))
     if route in SHORT_ROUTES:
-        return Decimal("200.00")
+        return (allowances or {}).get("short", Decimal("200.00"))
     if route in LONG_ROUTES:
-        return Decimal("900.00")
+        return (allowances or {}).get("long", Decimal("900.00"))
     return None
 
 
@@ -149,6 +153,18 @@ class PayrollService:
                 trip = {**trip, "payroll_date": trip_date}
                 trips.append(trip)
 
+        allowance_rows = self.manager.list_driver_pay_rates()
+        allowances = {
+            str(row["route_class"]): Decimal(str(row["allowance"]))
+            for row in allowance_rows
+            if row.get("route_class") in {"short", "long"}
+        }
+        if set(allowances) != {"short", "long"}:
+            raise FleetManagementError(
+                "Driver trip allowances are not configured. Apply "
+                "supabase_settings_migration.sql in Supabase."
+            )
+
         advances = (
             self._rows("cash_advances", {"payroll_period_id": period["id"]})
             if period else []
@@ -213,7 +229,7 @@ class PayrollService:
                 f"id:{driver_id}" if driver_id
                 else f"name:{' '.join(str(driver_name or 'Unassigned driver').split()).casefold()}"
             )
-            rate = trip_rate(trip.get("origin"), trip.get("destination"))
+            rate = trip_rate(trip.get("origin"), trip.get("destination"), allowances)
             issue = None
             if not trip.get("origin") or not trip.get("destination"):
                 issue = "Missing origin or destination"

@@ -28,7 +28,7 @@ values
     ('DAV2', 'PLAS', 46, 2200.00, true),
     ('GENSAN', 'DAV2', 36, 11000.00, true),
     ('GENSAN', 'DAV2', 46, 14000.00, true),
-    ('GENSAN', 'DAV1', 36, 12284.85, true),
+    ('GENSAN', 'DAV1', 36, 12268.90, true),
     ('GENSAN', 'DAV1', 46, 15500.00, true),
     ('GENSAN', 'PLAS', 36, 11000.00, true),
     ('GENSAN', 'PLAS', 46, 14000.00, true),

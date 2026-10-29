@@ -9,8 +9,11 @@ const TITLES = {
   fuel: "Fuel logs",
   tires: "Tire Monitoring Sheet",
   trips: "Movement workflow",
+  "trip-records": "Trip Records",
+  "completed-trips": "Completed Trips",
   payroll: "Payroll",
   revenue: "Revenue & hauling performance",
+  settings: "Settings",
 };
 
 const RESOURCE_CONFIG = {
@@ -295,6 +298,12 @@ const state = {
     error: "",
     selectedTripId: "",
   },
+  settings: {
+    section: "truck-rates",
+    data: null,
+    loading: false,
+    error: "",
+  },
   tripsGroupBy: "",
   selectedTripIds: new Set(),
   bulkDeletingTrips: false,
@@ -346,6 +355,45 @@ const state = {
       error: "",
     },
   },
+  tripRecords: {
+    records: [],
+    total: 0,
+    summary: null,
+    filters: { origins: [], destinations: [], drivers: [], statuses: [] },
+    search: "",
+    date_from: "",
+    date_to: "",
+    origin: "",
+    destination: "",
+    driver: "",
+    load_type: "",
+    status: "",
+    page: 1,
+    page_size: 25,
+    filters_open: false,
+    sort: "recorded_at",
+    sort_dir: "desc",
+    requestedKey: "",
+    loading: false,
+    error: "",
+  },
+  completedTrips: {
+    records: [],
+    loading: false,
+    loaded: false,
+    error: "",
+    requestedKey: "",
+    reloadAfterCurrent: false,
+    sort_by: "shipment_date",
+    sort_dir: "desc",
+    destination: "",
+    origin: "",
+    date_from: "",
+    date_to: "",
+    formOpen: true,
+    editingId: null,
+    formError: "",
+  },
   tripWizard: {
     step: 0,
     dirty: false,
@@ -371,9 +419,18 @@ view.addEventListener("toggle", (event) => {
   if (event.target.matches?.("details[data-revenue-filters]")) {
     state.revenue.filters_open = event.target.open;
   }
+  if (event.target.matches?.(".trip-record-filter-disclosure")) {
+    state.tripRecords.filters_open = event.target.open;
+  }
 }, true);
 let idleLogoutTimer;
 let lastActivityPing = 0;
+const authSessionChannel = "BroadcastChannel" in window
+  ? new BroadcastChannel("glfs-auth-session")
+  : null;
+if (authSessionChannel) {
+  authSessionChannel.addEventListener("message", () => window.location.reload());
+}
 let searchRenderTimer;
 let notificationPollTimer;
 let notificationFetchInProgress = false;
@@ -514,6 +571,11 @@ window.addEventListener("resize", () => {
 });
 
 function returnToSignIn(expired = false) {
+  if ("BroadcastChannel" in window) {
+    const channel = new BroadcastChannel("glfs-auth-session");
+    channel.postMessage("session-changed");
+    channel.close();
+  }
   window.location.replace(expired ? "/login?expired=1" : "/login");
 }
 
@@ -526,9 +588,22 @@ function registerSessionActivity() {
   lastActivityPing = now;
   fetch("/api/auth/me", { cache: "no-store" })
     .then(async (response) => {
+      const payload = await response.json().catch(() => ({}));
       if (response.status === 401) {
-        const payload = await response.json().catch(() => ({}));
         returnToSignIn(payload.error?.toLowerCase().includes("inactivity"));
+        return;
+      }
+      const currentUser = state.data?.user || {};
+      if (
+        response.ok
+        && payload.user
+        && (
+          String(payload.user.id) !== String(currentUser.id)
+          || Boolean(payload.user.can_add_completed_trip)
+            !== Boolean(currentUser.can_add_completed_trip)
+        )
+      ) {
+        window.location.reload();
       }
     })
     .catch(() => showToast("Could not verify the session. Check your connection.", "error"));
@@ -537,6 +612,12 @@ function registerSessionActivity() {
 for (const eventName of ["pointerdown", "keydown", "scroll", "touchstart"]) {
   window.addEventListener(eventName, registerSessionActivity, { passive: true });
 }
+
+window.addEventListener("focus", () => {
+  if (!state.data) return;
+  lastActivityPing = 0;
+  registerSessionActivity();
+});
 
 function escapeHtml(value) {
   return String(value ?? "").replace(/[&<>"']/g, (character) => ({
@@ -813,6 +894,9 @@ async function loadData({ force = false } = {}) {
       const user = state.data.user || {};
       document.querySelector("#signed-in-user").textContent =
         `${user.email || ""}${user.role ? ` · ${user.role}` : ""}`;
+      if (user.completed_trip_access_error) {
+        showToast(user.completed_trip_access_error, "error");
+      }
       registerSessionActivity();
       render();
       if (user.role === "dispatcher") {
@@ -2394,7 +2478,12 @@ async function loadDispatchWorkflow({ force = false } = {}) {
     window.clearTimeout(timeoutId);
     if (requestId === state.dispatch.requestId) {
       state.dispatch.loading = false;
-      if (state.page === "trips") render();
+      if (
+        state.page === "trips"
+        || (state.page === "settings" && state.settings.section === "dispatch")
+      ) {
+        render();
+      }
     }
   }
 }
@@ -2456,6 +2545,18 @@ function dispatchLocalDateTimeNow() {
   return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
 }
 
+function canViewDispatchIsm(movement, mode) {
+  const isArrivalQueue = mode === "arrivals";
+  const userId = String(state.data.user?.id || "");
+  return state.data.user?.role === "administrator"
+    || (isArrivalQueue
+      ? Boolean(movement.ism_no && movement.arrival_verified_at)
+      : String(movement.departure_user_id || "") === userId
+        || state.dispatch.dashboard.locations.some(
+          (location) => location.id === movement.origin_location_id && location.can_depart,
+        ));
+}
+
 function dispatchLoadItemsMarkup() {
   const items = state.dispatch.departureLoadItems;
   if (!items.length) return '<p class="dispatch-load-empty">No products added yet.</p>';
@@ -2510,10 +2611,14 @@ function renderDispatchLoadSelection(form) {
   const selected = form.querySelectorAll(".dispatch-selected-load");
   const hiddenInput = form.elements.namedItem("load_items");
   selected.forEach((container) => {
+    const loadType = form.elements.namedItem("load_type").value;
     container.innerHTML = container.closest(".dispatch-wizard-step")?.dataset.step === "4"
-      && form.elements.namedItem("load_type").value === "EMPTIES"
+      && loadType === "EMPTIES"
       ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>'
-      : dispatchLoadItemsMarkup();
+      : container.closest(".dispatch-wizard-step")?.dataset.step === "4"
+        && loadType === "NO_LOAD"
+        ? '<p class="dispatch-load-empty">No load or pallets are recorded for this movement.</p>'
+        : dispatchLoadItemsMarkup();
   });
   const catalog = form.querySelector(".dispatch-product-catalog");
   if (catalog) catalog.innerHTML = dispatchProductCatalogMarkup();
@@ -2550,16 +2655,18 @@ function dispatchWizardReviewMarkup(form) {
     const options = [...(form.elements.namedItem(name)?.options || [])];
     return options.find((option) => option.value === id)?.textContent.trim() || id || "Not selected";
   };
-  const productSummary = value("load_type") === "EMPTIES"
-    ? "Empty containers (product selection not required)"
-    : state.dispatch.departureLoadItems.map((item) => {
-      const product = state.dispatch.loadCatalog.find(
-        (candidate) => Number(candidate.id) === Number(item.product_id),
-      );
-      return product
-        ? `${product.section} · ${product.brand}${product.packing ? ` (${product.packing})` : ""} — ${formatNumber(item.pallet_quantity)} ${Number(item.pallet_quantity) === 1 ? "pallet" : "pallets"}`
-        : "";
-    }).filter(Boolean).join(", ") || "No products selected";
+  const productSummary = value("load_type") === "NO_LOAD"
+    ? "No load or pallets"
+    : value("load_type") === "EMPTIES"
+      ? "Empty containers (product selection not required)"
+      : state.dispatch.departureLoadItems.map((item) => {
+        const product = state.dispatch.loadCatalog.find(
+          (candidate) => Number(candidate.id) === Number(item.product_id),
+        );
+        return product
+          ? `${product.section} · ${product.brand}${product.packing ? ` (${product.packing})` : ""} — ${formatNumber(item.pallet_quantity)} ${Number(item.pallet_quantity) === 1 ? "pallet" : "pallets"}`
+          : "";
+      }).filter(Boolean).join(", ") || "No products selected";
   const manifest = form.elements.namedItem("departure_manifest").files?.[0]?.name || "Not attached";
   const invoice = form.elements.namedItem("fuel_invoice").files?.[0]?.name || "Not attached";
   const rows = [
@@ -2643,13 +2750,7 @@ function dispatchMovementCard(movement, mode) {
   const status = dispatchStatusLabel(movement.status);
   const isArrivalQueue = mode === "arrivals";
   const locationLine = `${movement.origin_location_name || movement.origin_location_id} → ${movement.destination_location_name || movement.destination_location_id}`;
-  const userId = String(state.data.user?.id || "");
-  const canViewIsm = isAdmin || (isArrivalQueue
-    ? isVerified
-    : String(movement.departure_user_id || "") === userId
-      || state.dispatch.dashboard.locations.some(
-        (location) => location.id === movement.origin_location_id && location.can_depart,
-      ));
+  const canViewIsm = canViewDispatchIsm(movement, mode);
   const contentSummary = Array.isArray(movement.load_items) && movement.load_items.length
     ? movement.load_items.map((item) => {
       const productLabel = `${item.brand}${item.packing ? ` (${item.packing})` : ""}`;
@@ -2663,8 +2764,10 @@ function dispatchMovementCard(movement, mode) {
     ["Truck", movement.truck_plate || `#${movement.truck_id}`],
     ["Driver", movement.driver_name || "—"],
     ["Trailer", movement.trailer_plate || `#${movement.trailer_id}`],
-    ["Load", `${movement.load_type} · ${formatNumber(movement.pallet_quantity)} pallets`],
-    ["Contents", contentSummary],
+    ["Load", movement.load_type === "NO_LOAD"
+      ? "No load"
+      : `${movement.load_type} · ${formatNumber(movement.pallet_quantity)} pallets`],
+    ["Contents", movement.load_type === "NO_LOAD" ? "No load" : contentSummary],
     ["Departed", dispatchDateTime(movement.departure_at)],
     ...(movement.arrival_at ? [["Arrived", dispatchDateTime(movement.arrival_at)]] : []),
     ...(canViewIsm && movement.ism_no ? [["ISM", movement.ism_no]] : []),
@@ -2681,6 +2784,26 @@ function dispatchMovementCard(movement, mode) {
       : "",
   ].filter(Boolean).join(" · ");
   let actions = "";
+  if (
+    mode === "departures"
+    && !movement.departure_document_ready
+    && movement.departure_user_id === state.data.user?.id
+    && movement.status !== "completed"
+  ) {
+    actions = `
+      <form class="dispatch-departure-document-form" data-movement-id="${escapeHtml(movement.id)}">
+        <p class="dispatch-document-warning">This movement is not sent to Arrivals until its required departure manifest is uploaded.</p>
+        <label class="form-field"><span>Upload the missing departure manifest</span><input name="departure_manifest" type="file" data-dispatch-preview="departure_manifest" accept="image/jpeg,image/png,image/webp" capture="environment" required /><img class="dispatch-image-preview" data-dispatch-preview="departure_manifest" alt="Departure manifest preview" hidden /></label>
+        <p class="dialog-error" role="alert" hidden></p>
+        <button class="button button-primary" type="submit">Upload departure manifest</button>
+      </form>`;
+  } else if (
+    mode === "departures"
+    && !movement.departure_document_ready
+    && movement.status !== "completed"
+  ) {
+    actions = '<p class="dispatch-document-warning">This movement is not sent to Arrivals because its departure manifest is missing. Only the dispatcher who recorded the departure can upload it.</p>';
+  }
   if (isArrivalQueue && !isAdmin && !isVerified
       && ["awaiting_arrival", "needs_correction"].includes(movement.status)) {
     actions = `
@@ -2727,11 +2850,27 @@ function dispatchMovementCard(movement, mode) {
     ${isArrivalQueue && !isAdmin && !isVerified
       ? '<p class="dispatch-ism-hidden">ISM is hidden until you verify the physical manifest.</p>'
       : ""}
+    ${isArrivalQueue && isAdmin && !movement.departure_document_ready
+      ? '<p class="dispatch-document-warning">This movement has no departure manifest. It is visible to administrators for follow-up, but the receiving dispatcher must have the manifest before processing arrival.</p>'
+      : ""}
     ${manifestLinks ? `<p class="dispatch-document-links">${manifestLinks}</p>` : ""}
     ${actions}
     <div><button class="button button-secondary button-small" type="button" data-action="dispatch-history" data-id="${escapeHtml(movement.id)}">View movement history</button></div>
     <div class="dispatch-history" data-history-for="${escapeHtml(movement.id)}" hidden></div>
   </article>`;
+}
+
+function dispatchCompletedMovementListItem(movement) {
+  const ism = canViewDispatchIsm(movement, "completed") && movement.ism_no
+    ? `ISM ${movement.ism_no}`
+    : "ISM unavailable";
+  return `<details class="dispatch-completed-item">
+    <summary class="dispatch-completed-summary">
+      <span>${escapeHtml(ism)}</span>
+      <span class="dispatch-completed-chevron" aria-hidden="true"></span>
+    </summary>
+    ${dispatchMovementCard(movement, "completed")}
+  </details>`;
 }
 
 function dispatchDepartureForm() {
@@ -2817,13 +2956,13 @@ function dispatchDepartureForm() {
           <div class="dispatch-selected-load" aria-live="polite">${selectedContents}</div>
         </section>
         <section class="dispatch-wizard-step" data-step="4" aria-labelledby="dispatch-step-title-4" hidden>
-          <h3 id="dispatch-step-title-4" tabindex="-1">Load type and pallet quantity</h3><p class="dispatch-wizard-instruction">Record whether this trailer carries full goods or empty containers, and enter its pallet count.</p>
+          <h3 id="dispatch-step-title-4" tabindex="-1">Load type and pallet quantity</h3><p class="dispatch-wizard-instruction">Record whether this trailer carries full goods, empty containers, or no load.</p>
           <div class="dialog-fields">
-            <label class="form-field"><span>Load type</span><select name="load_type" required><option value="">Select load type</option><option value="FULLS" ${state.dispatch.departureLoadType === "FULLS" ? "selected" : ""}>FULLS</option><option value="EMPTIES" ${state.dispatch.departureLoadType === "EMPTIES" ? "selected" : ""}>EMPTIES</option></select></label>
-            <label class="form-field"><span>Pallet quantity</span><input name="pallet_quantity" type="number" min="1" step="1" required value="${escapeHtml(state.dispatch.departurePalletQuantity || "")}" /></label>
+            <label class="form-field"><span>Load type</span><select name="load_type" required><option value="">Select load type</option><option value="FULLS" ${state.dispatch.departureLoadType === "FULLS" ? "selected" : ""}>FULLS</option><option value="EMPTIES" ${state.dispatch.departureLoadType === "EMPTIES" ? "selected" : ""}>EMPTIES</option><option value="NO_LOAD" ${state.dispatch.departureLoadType === "NO_LOAD" ? "selected" : ""}>NO LOAD</option></select></label>
+            <label class="form-field"><span>Pallet quantity</span><input name="pallet_quantity" type="number" min="${state.dispatch.departureLoadType === "NO_LOAD" ? "0" : "1"}" step="1" required ${state.dispatch.departureLoadType === "NO_LOAD" ? "readonly" : ""} value="${state.dispatch.departureLoadType === "NO_LOAD" ? "0" : escapeHtml(state.dispatch.departurePalletQuantity || "")}" /></label>
           </div>
           <div class="dispatch-trailer-capacity" data-dispatch-trailer-capacity>${selectedTrailer ? `Trailer capacity: <strong>${formatNumber(selectedTrailer.pallet_capacity)} pallets</strong>` : "Select a trailer in the previous step to view its capacity."}</div>
-          <section class="dispatch-load-summary" aria-labelledby="dispatch-load-summary-title"><h4 id="dispatch-load-summary-title">Selected trailer contents</h4><div class="dispatch-selected-load" aria-live="polite">${state.dispatch.departureLoadType === "EMPTIES" ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>' : selectedContents}</div></section>
+          <section class="dispatch-load-summary" aria-labelledby="dispatch-load-summary-title"><h4 id="dispatch-load-summary-title">Selected trailer contents</h4><div class="dispatch-selected-load" aria-live="polite">${state.dispatch.departureLoadType === "NO_LOAD" ? '<p class="dispatch-load-empty">No load or pallets are recorded for this movement.</p>' : state.dispatch.departureLoadType === "EMPTIES" ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>' : selectedContents}</div></section>
         </section>
         <section class="dispatch-wizard-step" data-step="5" aria-labelledby="dispatch-step-title-5" hidden>
           <h3 id="dispatch-step-title-5" tabindex="-1">Departure details and documentation</h3><p class="dispatch-wizard-instruction">Enter the departure reference and time, then attach the required departure manifest.</p>
@@ -2859,8 +2998,15 @@ function dispatchAdminSetup() {
   if (state.data.user?.role !== "administrator") return "";
   const locations = state.dispatch.locations;
   const users = state.dispatch.users;
-  return `<section class="panel dispatch-admin-setup">
-    <div class="panel-heading"><div><p class="eyebrow">ADMINISTRATION</p><h2>Dispatcher access and locations</h2></div></div>
+  return `<details class="panel dispatch-admin-setup">
+    <summary class="dispatch-admin-summary">
+      <span class="dispatch-admin-summary-copy">
+        <span class="eyebrow">ADMINISTRATION</span>
+        <strong>Dispatcher access and locations</strong>
+      </span>
+      <span class="dispatch-admin-toggle" aria-hidden="true">Manage access</span>
+    </summary>
+    <div class="dispatch-admin-content">
     <div class="dispatch-admin-forms">
       <form class="dispatch-assignment-form">
         <h3>Assign a dispatcher</h3>
@@ -2889,7 +3035,8 @@ function dispatchAdminSetup() {
         ? state.dispatch.assignments.map((assignment) => `<p><strong>${escapeHtml(assignment.email || assignment.user_id)}</strong> · ${escapeHtml(assignment.location_name)} (${escapeHtml(assignment.location_id)}) · ${assignment.can_depart ? "Departures" : ""}${assignment.can_depart && assignment.can_arrive ? " / " : ""}${assignment.can_arrive ? "Arrivals" : ""}</p>`).join("")
         : '<p class="empty-state">No dispatcher location assignments are configured yet.</p>'}
     </div>
-  </section>`;
+    </div>
+  </details>`;
 }
 
 function renderDispatchWorkflow() {
@@ -2930,15 +3077,20 @@ function renderDispatchWorkflow() {
     <button class="button button-secondary button-small" data-action="dispatch-page" data-page="${Math.min(pageCount, state.dispatch.page + 1)}" ${state.dispatch.page === pageCount ? "disabled" : ""}>Next</button>
   </nav>` : "";
   const listMarkup = pageRows.length
-    ? `<div class="dispatch-movement-list">${pageRows.map((row) => dispatchMovementCard(row, tab)).join("")}</div>${pageMarkup}`
-    : `<div class="empty-state"><span>↗</span><strong>No ${tab === "departures" ? "departures" : tab === "arrivals" ? "incoming movements" : "completed movements"} found</strong><small>${state.dispatch.search ? "Try another search." : "New movements will appear here when they match this workflow."}</small></div>`;
+    ? tab === "completed"
+      ? `<div class="dispatch-completed-list">${pageRows.map(dispatchCompletedMovementListItem).join("")}</div>${pageMarkup}`
+      : `<div class="dispatch-movement-list">${pageRows.map((row) => dispatchMovementCard(row, tab)).join("")}</div>${pageMarkup}`
+    : `<div class="empty-state"><span>↗</span><strong>No ${tab === "departures" ? "departures" : tab === "arrivals" ? "incoming movements" : "completed movements"} found</strong><small>${state.dispatch.search
+      ? "Try another search."
+      : tab === "arrivals" && !isAdmin
+        ? "Arrivals only show movements with a submitted departure manifest for locations where your account has receive-arrivals access. Ask an administrator to assign you at the destination location."
+        : "New movements will appear here when they match this workflow."}</small></div>`;
   const legacyRows = isAdmin
-    ? `<section class="panel records-panel"><div class="panel-heading"><div><p class="eyebrow">HISTORICAL RECORDS</p><h2>Trips recorded before the dispatch workflow</h2></div></div>
+    ? `<section class="panel records-panel dispatch-historical-records"><div class="panel-heading"><div><p class="eyebrow">HISTORICAL RECORDS</p><h2>Trips recorded before the dispatch workflow</h2><p class="dispatch-table-guidance">Scroll horizontally to review all trip fields. Select a row to open its details.</p></div></div>
         ${tableMarkup(state.data.trips || [], RESOURCE_CONFIG.trips.columns, RESOURCE_CONFIG.trips.api, { empty: "No historical trip records", rowAction: "trip-details" })}</section>`
     : "";
   return `
     ${header("LOCATION DISPATCH", "Departure → Arrival", "One movement ID. The receiving dispatcher verifies the manifest before arrival; only admins finalize financial trips.", '<button class="button button-secondary" data-action="dispatch-reload" type="button">Refresh</button>')}
-    ${isAdmin ? dispatchAdminSetup() : ""}
     <section class="panel records-panel dispatch-queue-panel">
       <div class="panel-heading records-heading">
         <div><p class="eyebrow">MOVEMENT QUEUES</p><h2>${tab === "departures" ? "Departures" : tab === "arrivals" ? "Arrivals" : "Completed Trips"}</h2></div>
@@ -2955,6 +3107,318 @@ function renderDispatchWorkflow() {
     ${tab === "completed" ? legacyRows : ""}`;
 }
 
+function tripRecordsQueryKey() {
+  const { search, date_from, date_to, origin, destination, driver, load_type, status, page, page_size, sort, sort_dir } =
+    state.tripRecords;
+  return JSON.stringify({
+    search, date_from, date_to, origin, destination, driver,
+    load_type, status, page, page_size, sort, sort_dir,
+  });
+}
+
+async function loadTripRecords({ force = false } = {}) {
+  const key = tripRecordsQueryKey();
+  const records = state.tripRecords;
+  if (records.loading || (!force && records.requestedKey === key && !records.error)) return;
+  records.requestedKey = key;
+  records.loading = true;
+  records.error = "";
+  render();
+
+  const params = new URLSearchParams();
+  for (const [keyName, value] of Object.entries({
+    search: records.search,
+    date_from: records.date_from,
+    date_to: records.date_to,
+    origin: records.origin,
+    destination: records.destination,
+    driver: records.driver,
+    load_type: records.load_type,
+    status: records.status,
+    page: records.page,
+    page_size: records.page_size,
+    sort: records.sort,
+    sort_dir: records.sort_dir,
+  })) {
+    if (value !== "") params.set(keyName, String(value));
+  }
+
+  try {
+    const result = await api(`/api/admin/trip-records?${params.toString()}`);
+    if (key !== tripRecordsQueryKey()) return;
+    records.records = result.records || [];
+    records.total = Number(result.total || 0);
+    records.summary = result.summary || null;
+    records.filters = result.filters || records.filters;
+  } catch (error) {
+    if (key === tripRecordsQueryKey()) records.error = error.message || "Could not load trip records.";
+  } finally {
+    if (key === records.requestedKey) {
+      records.loading = false;
+      if (state.page === "trip-records") render();
+    }
+  }
+}
+
+function tripRecordFilterOptions(values, selected, label, valueFor) {
+  return `<option value="">All ${label}</option>${values.map((item) => {
+    const value = valueFor(item);
+    return `<option value="${escapeHtml(value)}" ${String(value) === String(selected) ? "selected" : ""}>${escapeHtml(typeof item === "object" ? item.name : item)}</option>`;
+  }).join("")}`;
+}
+
+function tripRecordStatusLabel(status) {
+  return ({
+    completed: "Completed",
+    awaiting_arrival: "Awaiting arrival",
+    arrival_submitted: "Arrival submitted",
+    needs_correction: "Needs correction",
+    recorded: "Recorded",
+  })[status] || status || "Unknown";
+}
+
+function tripRecordSortButton(label, field) {
+  const records = state.tripRecords;
+  const selected = records.sort === field;
+  const direction = selected ? records.sort_dir : "";
+  const ariaSort = selected
+    ? (direction === "asc" ? "ascending" : "descending")
+    : "none";
+  return `<th scope="col" aria-sort="${ariaSort}"><button class="text-button trip-record-sort" type="button" data-action="trip-record-sort" data-sort="${field}">${label}${selected ? (direction === "asc" ? " ↑" : " ↓") : ""}</button></th>`;
+}
+
+function renderTripRecords() {
+  if (state.data?.user?.role !== "administrator") {
+    return `${header("OPERATIONS", "Trip Records", "Administrator access is required.")}<section class="error-card"><p>Only administrators can view trip records.</p></section>`;
+  }
+  const records = state.tripRecords;
+  const summary = records.summary || {};
+  const activeFilterCount = [
+    records.date_from,
+    records.date_to,
+    records.origin,
+    records.destination,
+    records.driver,
+    records.load_type,
+    records.status,
+  ].filter(Boolean).length;
+  const totalPages = Math.max(1, Math.ceil(records.total / records.page_size));
+  const table = records.loading
+    ? '<div class="empty-state"><strong>Loading trip records…</strong></div>'
+    : records.error
+      ? `<section class="error-card"><p>${escapeHtml(records.error)}</p><button class="button button-secondary" type="button" data-action="trip-record-retry">Retry</button></section>`
+      : records.records.length
+        ? `<div class="table-wrap trip-record-table-wrap"><table class="trip-record-table">
+          <thead><tr>
+            ${tripRecordSortButton("Trip ID", "trip_id")}
+            <th scope="col">ISM Number</th>
+            ${tripRecordSortButton("Origin", "origin")}
+            ${tripRecordSortButton("Destination", "destination")}
+            ${tripRecordSortButton("Driver", "driver")}
+            <th scope="col">Truck Plate</th><th scope="col">Trailer Plate</th>
+            <th scope="col">Load Type</th><th scope="col">Pallets</th>
+            <th scope="col">Time Out</th><th scope="col">Time In</th>
+            ${tripRecordSortButton("Route Rate / Trip Revenue", "rate")}
+            ${tripRecordSortButton("Trip Status", "status")}
+            <th scope="col">Dispatcher</th>
+            ${tripRecordSortButton("Date Recorded", "recorded_at")}
+          </tr></thead><tbody>${records.records.map((record) => `
+            <tr tabindex="0" role="button" class="clickable-row" data-action="trip-record-detail" data-id="${escapeHtml(record.id)}" aria-label="View trip ${escapeHtml(record.ism_no || record.id)} details">
+              <td data-label="Trip ID">${escapeHtml(record.id)}</td>
+              <td data-label="ISM Number">${escapeHtml(record.ism_no || "—")}</td>
+              <td data-label="Origin">${escapeHtml(record.origin || "—")}</td>
+              <td data-label="Destination">${escapeHtml(record.destination || "—")}</td>
+              <td data-label="Driver">${escapeHtml(record.driver_name || "—")}</td>
+              <td data-label="Truck Plate">${escapeHtml(record.truck_plate || "—")}</td>
+              <td data-label="Trailer Plate">${escapeHtml(record.trailer_plate || "—")}</td>
+              <td data-label="Load Type">${escapeHtml(record.load_type === "NO_LOAD" ? "No load" : record.load_type || "—")}</td>
+              <td data-label="Pallets">${record.pallet_quantity == null ? "—" : formatNumber(record.pallet_quantity)}</td>
+              <td data-label="Time Out">${escapeHtml(record.departure_at ? dispatchDateTime(record.departure_at) : record.time_out || "—")}</td>
+              <td data-label="Time In">${escapeHtml(record.arrival_at ? dispatchDateTime(record.arrival_at) : record.time_in || "—")}</td>
+              <td data-label="Route Rate / Trip Revenue">${record.route_rate == null ? "—" : escapeHtml(formatCurrency(record.route_rate))}${record.revenue_status ? `<small class="trip-record-subvalue">${escapeHtml(record.revenue_status)}</small>` : ""}</td>
+              <td data-label="Trip Status"><span class="badge badge-${escapeHtml(record.status)}">${escapeHtml(tripRecordStatusLabel(record.status))}</span>${record.requires_review ? '<small class="trip-record-subvalue">Review required</small>' : ""}</td>
+              <td data-label="Dispatcher">${escapeHtml(record.dispatcher_name || record.dispatcher_email || "—")}</td>
+              <td data-label="Date Recorded">${escapeHtml(record.date_recorded || "—")}</td>
+            </tr>`).join("")}</tbody>
+          </table></div>`
+        : '<div class="empty-state"><span aria-hidden="true">⌁</span><strong>No trips match these filters</strong><small>Adjust your search or filters to see records.</small></div>';
+
+  if (!records.loading && !records.error && records.requestedKey !== tripRecordsQueryKey()) {
+    loadTripRecords();
+  }
+
+  return `
+    ${header("OPERATIONS", "Trip Records", "Search and review all recorded trips, dispatch activity, and financial details.")}
+    <section class="trip-record-summary" aria-label="Trip record summary">
+      ${statCard("Total trips", formatNumber(summary.total_trips || 0), "blue", "▤")}
+      ${statCard("Completed trips", formatNumber(summary.completed_trips || 0), "green", "✓")}
+      ${statCard("Pending arrivals", formatNumber(summary.pending_arrivals || 0), "orange", "↗")}
+      ${statCard("Trips requiring review", formatNumber(summary.trips_requiring_review || 0), "red", "!")}
+    </section>
+    <section class="panel records-panel">
+      <div class="panel-heading records-heading">
+        <div><p class="eyebrow">READ-ONLY RECORDS</p><h2>All trips</h2></div>
+        <label class="search-box"><span class="sr-only">Search by ISM, trip ID, driver, or vehicle plate</span><span aria-hidden="true">⌕</span><input id="trip-record-search" type="search" placeholder="Search trips" value="${escapeHtml(records.search)}" /></label>
+      </div>
+      <details class="trip-record-filter-disclosure" ${records.filters_open ? "open" : ""}>
+        <summary class="trip-record-filter-summary">
+          <span>Filters</span>
+          <span class="trip-record-filter-indicator">${activeFilterCount ? `${activeFilterCount} active` : "Show filters"}</span>
+        </summary>
+      <div class="trip-record-filters" aria-label="Trip record filters">
+        <label class="form-field"><span>Date from</span><input type="date" data-trip-record-filter="date_from" value="${escapeHtml(records.date_from)}" /></label>
+        <label class="form-field"><span>Date to</span><input type="date" data-trip-record-filter="date_to" value="${escapeHtml(records.date_to)}" /></label>
+        <label class="form-field"><span>Origin</span><select data-trip-record-filter="origin">${tripRecordFilterOptions(records.filters.origins || [], records.origin, "origins", (item) => item)}</select></label>
+        <label class="form-field"><span>Destination</span><select data-trip-record-filter="destination">${tripRecordFilterOptions(records.filters.destinations || [], records.destination, "destinations", (item) => item)}</select></label>
+        <label class="form-field"><span>Driver</span><select data-trip-record-filter="driver">${tripRecordFilterOptions(records.filters.drivers || [], records.driver, "drivers", (item) => item.id)}</select></label>
+        <label class="form-field"><span>Load type</span><select data-trip-record-filter="load_type"><option value="">All load types</option><option value="FULLS" ${records.load_type === "FULLS" ? "selected" : ""}>FULLS</option><option value="EMPTIES" ${records.load_type === "EMPTIES" ? "selected" : ""}>EMPTIES</option><option value="NO_LOAD" ${records.load_type === "NO_LOAD" ? "selected" : ""}>NO LOAD</option></select></label>
+        <label class="form-field"><span>Trip status</span><select data-trip-record-filter="status">${tripRecordFilterOptions(records.filters.statuses || [], records.status, "statuses", (item) => item)}</select></label>
+        <label class="form-field"><span>Rows per page</span><select data-trip-record-filter="page_size">${[10, 25, 50, 100].map((size) => `<option value="${size}" ${records.page_size === size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
+      </div>
+      </details>
+      <p class="record-count">${formatNumber(records.total)} ${records.total === 1 ? "trip" : "trips"}${records.loading ? " · Loading…" : ""}</p>
+      ${table}
+      ${!records.loading && !records.error && records.total ? `<nav class="pagination trip-record-pagination" aria-label="Trip records pages">
+        <button class="button button-secondary button-small" type="button" data-action="trip-record-page" data-page="${Math.max(1, records.page - 1)}" ${records.page <= 1 ? "disabled" : ""}>Previous</button>
+        <span>Page ${records.page} of ${totalPages}</span>
+        <button class="button button-secondary button-small" type="button" data-action="trip-record-page" data-page="${Math.min(totalPages, records.page + 1)}" ${records.page >= totalPages ? "disabled" : ""}>Next</button>
+      </nav>` : ""}
+    </section>
+    <dialog class="record-dialog trip-record-detail-dialog" aria-labelledby="trip-record-detail-title">
+      <div class="dialog-header">
+        <div><p class="eyebrow">READ-ONLY TRIP DETAILS</p><h2 id="trip-record-detail-title">Trip details</h2></div>
+        <button class="icon-button dialog-close" data-action="close-trip-record-detail" type="button" aria-label="Close trip details">×</button>
+      </div>
+      <div class="trip-record-detail-content"></div>
+    </dialog>`;
+}
+
+function openTripRecordDetails(recordId) {
+  const record = state.tripRecords.records.find(
+    (item) => String(item.id) === String(recordId),
+  );
+  const dialog = view.querySelector(".trip-record-detail-dialog");
+  if (!record || !dialog) return;
+
+  const details = record.details || {};
+  const fields = [
+    ["Trip ID", record.id],
+    ["ISM number", record.ism_no],
+    ["Trip status", tripRecordStatusLabel(record.status)],
+    ["Date recorded", record.date_recorded],
+    ["Shipment date", details.shipment_date],
+    ["Origin", record.origin],
+    ["Destination", record.destination],
+    ["Driver", record.driver_name],
+    ["Truck plate", record.truck_plate],
+    ["Trailer plate", record.trailer_plate],
+    ["Load type", record.load_type === "NO_LOAD" ? "No load" : record.load_type],
+    ["Pallet quantity", record.pallet_quantity],
+    ["Departure", record.departure_at || record.time_out],
+    ["Arrival", record.arrival_at || record.time_in],
+    ["Route", details.route],
+    ["Route number", details.route_number],
+    ["Route pair", details.route_pair],
+    ["Pallet capacity", details.pallet_capacity],
+    ["Route rate / trip revenue", record.route_rate == null ? null : formatCurrency(record.route_rate)],
+    ["Revenue status", record.revenue_status],
+    ["Trip rate review required", details.trip_rate_review_required ? "Yes" : "No"],
+    ["Trailer review required", details.trailer_review_required ? "Yes" : "No"],
+    ["Dispatcher", record.dispatcher_name || record.dispatcher_email],
+    ["Notes", details.notes],
+    ["Load details", details.load_details],
+    ["Trip fuel", details.trip_fuel],
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "");
+  const docs = [];
+  if (record.has_trip_manifest) {
+    docs.push(`<a class="text-link" href="/api/trips/${encodeURIComponent(record.id)}/manifest" target="_blank" rel="noopener">Trip load manifest</a>`);
+  }
+  if (record.has_trip_fuel_invoice) {
+    docs.push(`<a class="text-link" href="/api/trips/${encodeURIComponent(record.id)}/fuel-invoice" target="_blank" rel="noopener">Trip fuel invoice</a>`);
+  }
+  if (record.movement_id && record.has_departure_manifest) {
+    docs.push(`<a class="text-link" href="/api/dispatch/movements/${encodeURIComponent(record.movement_id)}/documents/departure" target="_blank" rel="noopener">Departure manifest</a>`);
+  }
+  if (record.movement_id && record.has_arrival_manifest) {
+    docs.push(`<a class="text-link" href="/api/dispatch/movements/${encodeURIComponent(record.movement_id)}/documents/arrival" target="_blank" rel="noopener">Arrival manifest</a>`);
+  }
+  if (record.movement_id && record.has_dispatch_fuel_invoice) {
+    docs.push(`<a class="text-link" href="/api/dispatch/movements/${encodeURIComponent(record.movement_id)}/documents/fuel_invoice" target="_blank" rel="noopener">Dispatch fuel invoice</a>`);
+  }
+  const movement = record.movement || {};
+  const fuel = record.fuel || {};
+  const detailMarkup = fields.map(([label, value]) => `
+    <div class="trip-detail-item"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  const movementFields = [
+    ["Dispatch status", movement.status],
+    ["Departure timestamp", movement.departure_at],
+    ["Arrival verified at", movement.arrival_verified_at],
+    ["Arrival timestamp", movement.arrival_at],
+    ["Fuel allocation", movement.fuel_allocation],
+    ["Departure fuel expense", movement.actual_fuel_expense],
+    ["Arrival fuel expense", movement.arrival_fuel_expense],
+    ["Fuel remarks", movement.fuel_remarks],
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "");
+  const fuelFields = [
+    ["Trip fuel allocation", fuel.fuel_allocation],
+    ["Trip actual expense", fuel.actual_expense],
+    ["Trip fuel total cost", fuel.total_cost],
+    ["Trip fuel remarks", fuel.remarks],
+  ].filter(([, value]) => value !== null && value !== undefined && String(value).trim() !== "");
+
+  dialog.querySelector("#trip-record-detail-title").textContent =
+    record.ism_no ? `Trip ${record.ism_no}` : `Trip #${record.id}`;
+  const content = dialog.querySelector(".trip-record-detail-content");
+  content.innerHTML = `
+    <section><h3>Trip record</h3><dl class="trip-details-grid">${detailMarkup || "<p>No trip details are available.</p>"}</dl></section>
+    ${movementFields.length ? `<section><h3>Departure and arrival</h3><dl class="trip-details-grid">${movementFields.map(([label, value]) => `<div class="trip-detail-item"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></section>` : ""}
+    ${fuelFields.length ? `<section><h3>Financial details</h3><dl class="trip-details-grid">${fuelFields.map(([label, value]) => `<div class="trip-detail-item"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl></section>` : ""}
+    <section><h3>Supporting documents</h3>${docs.length ? `<div class="trip-record-document-links">${docs.join("")}</div>` : "<p>No supporting documents are attached.</p>"}</section>
+    <section><h3>Trip edit history</h3><div class="trip-record-edit-history"><p>Loading trip history…</p></div></section>
+    ${record.movement_id ? '<section><h3>Dispatch audit history</h3><div class="trip-record-dispatch-history"><p>Loading dispatch history…</p></div></section>' : ""}`;
+  closeAllDialogs();
+  dialog.showModal();
+  loadTripRecordHistory(record, content);
+}
+
+async function loadTripRecordHistory(record, content) {
+  const editHistory = content.querySelector(".trip-record-edit-history");
+  if (editHistory) {
+    try {
+      const result = await api(`/api/trips/${encodeURIComponent(record.id)}/history`);
+      if (editHistory.isConnected) {
+        editHistory.innerHTML = renderTripHistory(result.history || []);
+      }
+    } catch (error) {
+      if (editHistory.isConnected) {
+        editHistory.innerHTML = `<p class="dialog-error" role="alert">${escapeHtml(error.message || "Could not load trip edit history.")}</p>`;
+      }
+    }
+  }
+
+  const dispatchHistory = content.querySelector(".trip-record-dispatch-history");
+  if (!dispatchHistory || !record.movement_id) return;
+  try {
+    const result = await api(
+      `/api/dispatch/movements/${encodeURIComponent(record.movement_id)}/history`,
+    );
+    if (dispatchHistory.isConnected) {
+      const entries = result.history || [];
+      dispatchHistory.innerHTML = entries.length
+        ? `<ol class="trip-history-list">${entries.map((entry) => `
+          <li class="trip-history-entry">
+            <div class="trip-history-meta"><strong>${escapeHtml(entry.action || "Movement updated")}</strong><time>${escapeHtml(entry.created_at || "")}</time></div>
+            <pre>${escapeHtml(JSON.stringify(entry.details || {}, null, 2))}</pre>
+          </li>`).join("")}</ol>`
+        : "<p>No dispatch audit events recorded.</p>";
+    }
+  } catch (error) {
+    if (dispatchHistory.isConnected) {
+      dispatchHistory.innerHTML = `<p class="dialog-error" role="alert">${escapeHtml(error.message || "Could not load dispatch history.")}</p>`;
+    }
+  }
+}
+
 async function uploadDispatchDocument(movementId, kind, file) {
   if (!file || file.size === 0) {
     throw new Error(`${kind === "arrival" ? "Arrival" : "Departure"} documentation is required.`);
@@ -2965,6 +3429,30 @@ async function uploadDispatchDocument(movementId, kind, file) {
     `/api/dispatch/movements/${encodeURIComponent(movementId)}/documents/${kind}`,
     { method: "POST", body },
   );
+}
+
+async function submitDispatchDepartureDocument(form) {
+  if (form.dataset.submitting === "true") return;
+  form.dataset.submitting = "true";
+  const submit = form.querySelector('button[type="submit"]');
+  const errorElement = form.querySelector('[role="alert"]');
+  submit.disabled = true;
+  errorElement.hidden = true;
+  try {
+    await uploadDispatchDocument(
+      form.dataset.movementId,
+      "departure",
+      form.elements.namedItem("departure_manifest").files?.[0],
+    );
+    showToast("Departure manifest uploaded. The movement is now eligible for Arrivals.");
+    await refreshDispatcherDispatchView();
+  } catch (error) {
+    errorElement.textContent = error.message || "Could not upload the departure manifest.";
+    errorElement.hidden = false;
+  } finally {
+    form.dataset.submitting = "false";
+    if (submit.isConnected) submit.disabled = false;
+  }
 }
 
 async function prepareDispatchDocument(file) {
@@ -3386,7 +3874,21 @@ function refreshDispatchDestinations(form) {
     destination.value = currentValue;
   }
   state.dispatch.departureDestination = destination.value;
+  updateDispatchFuelAllocationDefault(form);
   updateDispatchDepartureAvailability(form);
+}
+
+function updateDispatchFuelAllocationDefault(form) {
+  const field = form.elements.namedItem("fuel_allocation");
+  if (!field) return;
+  const route = (state.data.truck_routes || []).find((item) =>
+    item.active !== false
+      && item.origin_code === form.elements.namedItem("origin_location_id")?.value
+      && item.destination_code === form.elements.namedItem("destination_location_id")?.value,
+  );
+  const value = route?.fuel_allocation;
+  field.value = value == null ? "" : String(value);
+  state.dispatch.departureFuelAllocation = field.value;
 }
 
 function updateDispatchDepartureAvailability(form) {
@@ -3440,6 +3942,285 @@ function validateDispatchPalletQuantity(form) {
     quantity.removeAttribute("max");
     quantity.setCustomValidity("");
   }
+}
+
+function syncCompletedTripsNavigation() {
+  const existing = document.querySelector('[data-nav-feature="completed-trips"]');
+  if (state.data?.user?.can_add_completed_trip !== true) {
+    existing?.remove();
+    return;
+  }
+  if (existing) return;
+  const grid = document.querySelector("#nav-panel-operations .nav-mega-grid");
+  if (!grid) return;
+  const link = document.createElement("a");
+  link.className = "nav-link nav-item";
+  link.href = "#completed-trips";
+  link.dataset.page = "completed-trips";
+  link.dataset.navFeature = "completed-trips";
+  link.setAttribute("aria-label", "Add a Completed Trip");
+  link.innerHTML = `
+    <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></svg>
+    <span><span class="nav-link-label">Add a Completed Trip</span><small>Manage your private trip history</small></span>`;
+  grid.append(link);
+}
+
+function completedTripFormMarkup() {
+  const trip = state.completedTrips.records.find(
+    (record) => String(record.id) === String(state.completedTrips.editingId),
+  );
+  const value = (key) => escapeHtml(trip?.[key] ?? "");
+  const imageLink = (url) => url
+    ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">View image</a>`
+    : `<span class="completed-trip-no-image">No image uploaded</span>`;
+  return `
+    <section class="panel completed-trip-form-panel" aria-labelledby="completed-trip-form-title">
+      <div class="panel-heading">
+        <div><p class="eyebrow">PRIVATE TRIP HISTORY</p>
+          <h2 id="completed-trip-form-title">${trip ? "Edit completed trip" : "Add a Completed Trip"}</h2>
+        </div>
+      </div>
+      <form class="completed-trip-form">
+        <div class="dialog-fields">
+          <label class="form-field"><span>ISM No *</span><input name="ism_no" maxlength="80" required value="${value("ism_no")}" /></label>
+          <label class="form-field"><span>Shipment Date *</span><input name="shipment_date" type="date" required value="${value("shipment_date")}" /></label>
+          <label class="form-field"><span>Origin *</span><input name="origin" maxlength="300" required value="${value("origin")}" /></label>
+          <label class="form-field"><span>Destination *</span><input name="destination" maxlength="300" required value="${value("destination")}" /></label>
+          <label class="form-field"><span>Route No.</span><input name="route_number" type="number" min="1" step="1" value="${value("route_number")}" /></label>
+          <label class="form-field"><span>Truck Plate</span><input name="truck_plate" maxlength="100" value="${value("truck_plate")}" /></label>
+          <label class="form-field"><span>Trailer Plate</span><input name="trailer_plate" maxlength="100" value="${value("trailer_plate")}" /></label>
+          <label class="form-field"><span>Pallet Capacity</span><input name="pallet_capacity" type="number" min="1" step="1" value="${value("pallet_capacity")}" /></label>
+          <label class="form-field"><span>Trip Rate (₱)</span><input name="trip_rate" type="number" min="0" step="0.01" value="${value("trip_rate")}" /></label>
+          <label class="form-field"><span>Fuel Allocation (₱)</span><input name="fuel_allocation" type="number" min="0" step="0.01" value="${value("fuel_allocation")}" /></label>
+          <label class="form-field"><span>Actual Fuel (₱)</span><input name="actual_fuel" type="number" min="0" step="0.01" value="${value("actual_fuel")}" /></label>
+          <label class="form-field"><span>Time In</span><input name="time_in" type="time" value="${escapeHtml(String(trip?.time_in || "").slice(0, 5))}" /></label>
+          <label class="form-field"><span>Time Out</span><input name="time_out" type="time" value="${escapeHtml(String(trip?.time_out || "").slice(0, 5))}" /></label>
+          <label class="form-field"><span>Load</span><input name="load" maxlength="500" value="${value("load")}" /></label>
+          <label class="form-field"><span>Driver</span><input name="driver" maxlength="200" value="${value("driver")}" /></label>
+          <label class="form-field"><span>Trip/Fuel</span><textarea name="trip_fuel" rows="2" maxlength="5000">${value("trip_fuel")}</textarea></label>
+          <label class="form-field"><span>Manifest</span><input name="manifest_image" type="file" accept="image/jpeg,image/png,image/webp" /><small class="field-hint">JPG, PNG, or WEBP, up to 10 MB. ${imageLink(trip?.manifest_url, "manifest")}</small></label>
+          <label class="form-field"><span>Fuel Receipt</span><input name="fuel_receipt_image" type="file" accept="image/jpeg,image/png,image/webp" /><small class="field-hint">JPG, PNG, or WEBP, up to 10 MB. ${imageLink(trip?.fuel_receipt_url, "receipt")}</small></label>
+        </div>
+        <p class="dialog-error completed-trip-form-error" role="alert" ${state.completedTrips.formError ? "" : "hidden"}>${escapeHtml(state.completedTrips.formError)}</p>
+        <div class="dialog-actions">
+          <button class="button button-secondary" data-action="completed-trip-cancel" type="button">Cancel</button>
+          <button class="button button-primary" type="submit">${trip ? "Save Changes" : "Save Completed Trip"}</button>
+        </div>
+      </form>
+    </section>`;
+}
+
+function completedTripDetailsMarkup(trip) {
+  const fields = [
+    ["ISM No", trip.ism_no],
+    ["Shipment date", trip.shipment_date],
+    ["Origin", trip.origin],
+    ["Destination", trip.destination],
+    ["Route No.", trip.route_number],
+    ["Truck plate", trip.truck_plate],
+    ["Trailer plate", trip.trailer_plate],
+    ["Pallet capacity", trip.pallet_capacity ? `${trip.pallet_capacity} pallets` : null],
+    ["Trip rate", trip.trip_rate == null ? null : formatCurrency(trip.trip_rate)],
+    ["Fuel allocation", trip.fuel_allocation == null ? null : formatCurrency(trip.fuel_allocation)],
+    ["Actual fuel", trip.actual_fuel == null ? null : formatCurrency(trip.actual_fuel)],
+    ["Time in", trip.time_in],
+    ["Time out", trip.time_out],
+    ["Load", trip.load],
+    ["Driver", trip.driver],
+    ["Trip/Fuel", trip.trip_fuel],
+  ];
+  return fields.map(([label, value]) => `
+    <div class="trip-detail-item"><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value || "—")}</dd></div>`).join("");
+}
+
+function renderCompletedTrips() {
+  const trips = state.completedTrips.records;
+  const rows = trips.map((trip) => `
+    <tr>
+      <td>${escapeHtml(trip.ism_no || "—")}</td>
+      <td>${escapeHtml(trip.shipment_date || "—")}</td>
+      <td>${escapeHtml(trip.origin || "—")}</td>
+      <td>${escapeHtml(trip.destination || "—")}</td>
+      <td>${escapeHtml(trip.route_number ?? "—")}</td>
+      <td>${escapeHtml(trip.truck_plate || "—")}</td>
+      <td>${escapeHtml(trip.trailer_plate || "—")}</td>
+      <td>${trip.pallet_capacity ? `${escapeHtml(trip.pallet_capacity)} pallets` : "—"}</td>
+      <td>${trip.trip_rate == null ? "—" : escapeHtml(formatCurrency(trip.trip_rate))}</td>
+      <td>${trip.fuel_allocation == null ? "—" : escapeHtml(formatCurrency(trip.fuel_allocation))}</td>
+      <td>${trip.actual_fuel == null ? "—" : escapeHtml(formatCurrency(trip.actual_fuel))}</td>
+      <td>${escapeHtml(trip.time_in || "—")}</td>
+      <td>${escapeHtml(trip.time_out || "—")}</td>
+      <td>${escapeHtml(trip.load || "—")}</td>
+      <td>${escapeHtml(trip.driver || "—")}</td>
+      <td>${escapeHtml(trip.trip_fuel || "—")}</td>
+      <td>${trip.manifest_url ? `<a href="${escapeHtml(trip.manifest_url)}" target="_blank" rel="noopener">View image</a>` : "—"}</td>
+      <td>${trip.fuel_receipt_url ? `<a href="${escapeHtml(trip.fuel_receipt_url)}" target="_blank" rel="noopener">View image</a>` : "—"}</td>
+      <td><span class="completed-trip-actions">
+        <button class="button button-secondary button-small" data-action="completed-trip-view" data-id="${escapeHtml(trip.id)}" type="button">View</button>
+        <button class="button button-secondary button-small" data-action="completed-trip-edit" data-id="${escapeHtml(trip.id)}" type="button">Edit</button>
+        <button class="icon-button delete-button" data-action="completed-trip-delete" data-id="${escapeHtml(trip.id)}" type="button" aria-label="Delete trip ${escapeHtml(trip.ism_no || "")}">×</button>
+      </span></td>
+    </tr>`).join("");
+  return `
+    <div class="page-heading">
+      <div><p class="eyebrow">PRIVATE TRIP HISTORY</p><h1>Completed Trips</h1>
+        <p class="page-description">Record and manage completed trips using the fleet trip record format.</p>
+      </div>
+      <button class="button button-primary" data-action="completed-trip-add" type="button">Add a Completed Trip</button>
+    </div>
+    ${state.completedTrips.formOpen ? completedTripFormMarkup() : ""}
+    <section class="panel completed-trip-list-panel">
+      <div class="panel-heading"><div><p class="eyebrow">YOUR RECORDS</p><h2>Saved completed trips</h2></div>
+        <span class="record-count">${state.completedTrips.loading ? "Loading…" : `${formatNumber(trips.length)} trips`}</span>
+      </div>
+      <form class="completed-trip-filter-form dialog-fields" aria-label="Filter completed trips">
+        <label class="form-field"><span>Origin</span><input name="origin" value="${escapeHtml(state.completedTrips.origin)}" placeholder="Search origin" /></label>
+        <label class="form-field"><span>Destination</span><input name="destination" value="${escapeHtml(state.completedTrips.destination)}" placeholder="Search destination" /></label>
+        <label class="form-field"><span>Departure from</span><input name="date_from" type="date" value="${escapeHtml(state.completedTrips.date_from)}" /></label>
+        <label class="form-field"><span>Departure to</span><input name="date_to" type="date" value="${escapeHtml(state.completedTrips.date_to)}" /></label>
+        <label class="form-field"><span>Sort by</span><select name="sort_by">
+          ${[["shipment_date", "Shipment date"], ["destination", "Destination"], ["route_number", "Route No."]].map(([key, label]) => `<option value="${key}" ${state.completedTrips.sort_by === key ? "selected" : ""}>${label}</option>`).join("")}
+        </select></label>
+        <label class="form-field"><span>Direction</span><select name="sort_dir"><option value="desc" ${state.completedTrips.sort_dir === "desc" ? "selected" : ""}>Descending</option><option value="asc" ${state.completedTrips.sort_dir === "asc" ? "selected" : ""}>Ascending</option></select></label>
+        <div class="form-field completed-trip-filter-action"><span aria-hidden="true">&nbsp;</span><button class="button button-secondary" type="submit">Apply filters</button></div>
+      </form>
+      ${state.completedTrips.error ? `<div class="error-card"><p>${escapeHtml(state.completedTrips.error)}</p><button class="button button-secondary button-small" data-action="completed-trip-retry" type="button">Retry</button></div>` : ""}
+      ${state.completedTrips.loading ? `<div class="loading-card">Loading your completed trips…</div>` : ""}
+      ${!state.completedTrips.loading && !state.completedTrips.error && !trips.length ? `<div class="empty-state"><strong>No completed trips yet</strong><small>Save a trip to start your private history.</small></div>` : ""}
+      ${!state.completedTrips.loading && !state.completedTrips.error && trips.length ? `<div class="table-wrap completed-trip-table-wrap"><table class="data-table completed-trip-table"><thead><tr>${["ISM NO", "SHIPMENT DATE", "ORIGIN", "DESTINATION", "ROUTE NO.", "TRUCK PLATE", "TRAILER PLATE", "PALLET CAPACITY", "TRIP RATE", "FUEL ALLOCATION", "ACTUAL FUEL", "TIME IN", "TIME OUT", "LOAD", "DRIVER", "TRIP/FUEL", "MANIFEST", "FUEL RECEIPT", "Action"].map((heading) => `<th scope="col">${heading}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>` : ""}
+    </section>
+    <dialog class="record-dialog completed-trip-details-dialog" aria-labelledby="completed-trip-details-title">
+      <div class="dialog-header"><div><p class="eyebrow">TRIP DETAILS</p><h2 id="completed-trip-details-title"></h2></div>
+        <button class="icon-button" data-action="completed-trip-close-details" type="button" aria-label="Close trip details">×</button>
+      </div>
+      <dl class="trip-details-grid"></dl>
+      <p class="completed-trip-details-attachment"></p>
+      <div class="dialog-actions">
+        <button class="button button-secondary" data-action="completed-trip-close-details" type="button">Close</button>
+      </div>
+    </dialog>`;
+}
+
+function completedTripFilterKey() {
+  const { origin, destination, date_from, date_to, sort_by, sort_dir } =
+    state.completedTrips;
+  return JSON.stringify({
+    origin, destination, date_from, date_to, sort_by, sort_dir,
+  });
+}
+
+async function loadCompletedTrips(force = false) {
+  const trips = state.completedTrips;
+  const key = completedTripFilterKey();
+  if (trips.loading) {
+    if (force) trips.reloadAfterCurrent = true;
+    return;
+  }
+  if (!force && trips.requestedKey === key) return;
+  trips.requestedKey = key;
+  trips.loading = true;
+  trips.error = "";
+  if (state.page === "completed-trips") render();
+  try {
+    const params = new URLSearchParams({
+      origin: trips.origin,
+      destination: trips.destination,
+      date_from: trips.date_from,
+      date_to: trips.date_to,
+      sort_by: trips.sort_by,
+      sort_dir: trips.sort_dir,
+    });
+    const response = await api(`/api/completed-trips?${params}`);
+    trips.records = response.data || [];
+    trips.loaded = true;
+  } catch (error) {
+    trips.error = error.message || "Could not load completed trips.";
+  } finally {
+    trips.loading = false;
+    if (trips.reloadAfterCurrent) {
+      trips.reloadAfterCurrent = false;
+      trips.requestedKey = "";
+      loadCompletedTrips(true);
+      return;
+    }
+    if (state.page === "completed-trips") render();
+  }
+}
+
+async function submitCompletedTripForm(form) {
+  if (!form.reportValidity()) return;
+  const errorElement = form.querySelector(".completed-trip-form-error");
+  const submitButton = form.querySelector('[type="submit"]');
+  const tripState = state.completedTrips;
+  const manifestImage = form.elements.namedItem("manifest_image").files[0];
+  const fuelReceiptImage = form.elements.namedItem("fuel_receipt_image").files[0];
+  const payload = Object.fromEntries(new FormData(form));
+  delete payload.manifest_image;
+  delete payload.fuel_receipt_image;
+  const editing = tripState.editingId !== null;
+  submitButton.disabled = true;
+  errorElement.hidden = true;
+  try {
+    const response = await api(
+      editing
+        ? `/api/completed-trips/${encodeURIComponent(tripState.editingId)}`
+        : "/api/completed-trips",
+      { method: editing ? "PATCH" : "POST", body: JSON.stringify(payload) },
+    );
+    const savedTrip = response.data;
+    const uploadErrors = [];
+    for (const [kind, image] of [
+      ["manifest", manifestImage],
+      ["fuel-receipt", fuelReceiptImage],
+    ]) {
+      if (!image) continue;
+      try {
+        const upload = new FormData();
+        upload.append("image", image);
+        const uploaded = await api(
+          `/api/completed-trips/${encodeURIComponent(savedTrip.id)}/${kind}`,
+          { method: "POST", body: upload },
+        );
+        if (uploaded.warning) uploadErrors.push(uploaded.warning);
+      } catch (error) {
+        uploadErrors.push(
+          `Trip saved, but its ${kind} image was not uploaded: ${error.message}`,
+        );
+      }
+    }
+    tripState.editingId = null;
+    tripState.formOpen = false;
+    tripState.formError = "";
+    tripState.requestedKey = "";
+    await loadCompletedTrips(true);
+    if (uploadErrors.length) showToast(uploadErrors.join(" "), "error");
+    else showToast(editing ? "Completed trip updated." : "Completed trip saved.");
+  } catch (error) {
+    errorElement.textContent = error.message || "Could not save the completed trip.";
+    errorElement.hidden = false;
+  } finally {
+    if (submitButton.isConnected) submitButton.disabled = false;
+  }
+}
+
+function openCompletedTripDetails(tripId) {
+  const trip = state.completedTrips.records.find(
+    (record) => String(record.id) === String(tripId),
+  );
+  const dialog = view.querySelector(".completed-trip-details-dialog");
+  if (!trip || !dialog) return;
+  dialog.querySelector("#completed-trip-details-title").textContent = trip.title;
+  dialog.querySelector(".trip-details-grid").innerHTML = completedTripDetailsMarkup(trip);
+  const attachment = dialog.querySelector(".completed-trip-details-attachment");
+  attachment.innerHTML = [
+    trip.manifest_url
+      ? `<a href="${escapeHtml(trip.manifest_url)}" target="_blank" rel="noopener">View manifest</a>`
+      : "",
+    trip.fuel_receipt_url
+      ? `<a href="${escapeHtml(trip.fuel_receipt_url)}" target="_blank" rel="noopener">View fuel receipt</a>`
+      : "",
+  ].filter(Boolean).join(" · ");
+  dialog.showModal();
 }
 
 function renderResource(page) {
@@ -4244,6 +5025,183 @@ function renderPayroll() {
     </section>`;
 }
 
+function settingsSectionNavigation() {
+  const sections = [
+    ["truck-rates", "Truck route rates"],
+    ["financial", "Financial rates"],
+    ["fleet", "Trucks & trailers"],
+    ["drivers", "Drivers"],
+    ["assignments", "Assignments"],
+    ["dispatch", "Dispatch access"],
+  ];
+  return `<nav class="settings-section-tabs" aria-label="Settings sections">
+    ${sections.map(([key, label]) => `
+      <button class="trip-view-tab ${state.settings.section === key ? "trip-view-tab-active" : ""}"
+        type="button" data-action="settings-section" data-section="${key}"
+        aria-pressed="${state.settings.section === key}">${label}</button>`).join("")}
+  </nav>`;
+}
+
+function renderFinancialSettings() {
+  const settings = state.settings.data;
+  const payRate = (routeClass) => settings.driver_pay_rates.find(
+    (row) => row.route_class === routeClass,
+  )?.allowance ?? "";
+  const routes = settings.truck_routes;
+  return `
+    <section class="panel settings-group">
+      <div class="panel-heading"><div><p class="eyebrow">DRIVER PAY</p><h2>Per-trip driver allowances</h2>
+        <p class="page-description">These allowances are used for new and draft payroll calculations. Reviewed and finalized payroll snapshots remain unchanged.</p></div></div>
+      <form class="settings-payroll-rates-form settings-pay-form">
+        <label class="form-field"><span>Short-route allowance (₱)</span><input name="short" type="number" min="0" step="0.01" value="${escapeHtml(payRate("short"))}" required /></label>
+        <label class="form-field"><span>Long-route allowance (₱)</span><input name="long" type="number" min="0" step="0.01" value="${escapeHtml(payRate("long"))}" required /></label>
+        <button class="button button-primary" type="submit">Save driver allowances</button>
+      </form>
+    </section>
+    <section class="panel settings-group">
+      <div class="panel-heading"><div><p class="eyebrow">FUEL PLANNING</p><h2>Route fuel-allocation defaults</h2>
+        <p class="page-description">Optional route defaults are recorded in liters. They do not overwrite existing trip or fuel-log values.</p></div></div>
+      <div class="table-wrap settings-table-wrap"><table class="settings-rate-table">
+        <thead><tr><th>Route</th><th>Default allocation (L)</th><th>Active</th><th>Save</th></tr></thead>
+        <tbody>${routes.map((route) => `<tr>
+          <td>${escapeHtml(route.origin_name)} → ${escapeHtml(route.destination_name)}</td>
+          <td><input form="settings-route-form-${escapeHtml(route.id)}" id="settings-fuel-${escapeHtml(route.id)}" name="fuel_allocation" type="number" min="0" step="0.01" value="${route.fuel_allocation == null ? "" : escapeHtml(route.fuel_allocation)}" placeholder="Not configured" />
+            <label class="sr-only" for="settings-fuel-${escapeHtml(route.id)}">Fuel allocation for ${escapeHtml(route.origin_name)} to ${escapeHtml(route.destination_name)}</label></td>
+          <td><label class="settings-active-control"><input form="settings-route-form-${escapeHtml(route.id)}" name="active" type="checkbox" ${route.active === false ? "" : "checked"} /> Active</label></td>
+          <td><form id="settings-route-form-${escapeHtml(route.id)}" class="settings-route-form settings-inline-form" data-route-id="${escapeHtml(route.id)}"><button class="button button-secondary button-small" type="submit">Save route</button></form></td>
+        </tr>`).join("") || '<tr><td colspan="4">No routes are configured.</td></tr>'}</tbody>
+      </table></div>
+    </section>`;
+}
+
+function renderTruckRouteRates() {
+  const { truck_routes: routes, truck_route_rates: rates } = state.settings.data;
+  const getRoute = (rate) => routes.find((row) => String(row.id) === String(rate.route_id))
+    || routes.find((row) =>
+      row.origin_code === rate.origin_code
+        && row.destination_code === rate.destination_code,
+    );
+  return `<section class="panel settings-group">
+    <div class="panel-heading"><div><p class="eyebrow">REVENUE</p><h2>Truck route rates</h2>
+      <p class="page-description">Rates are selected by route direction and trailer pallet capacity. Changes apply to new trips; saved trip-rate snapshots are preserved.</p></div>
+      <span class="record-count">${formatNumber(rates.length)} rates</span></div>
+    <div class="table-wrap settings-table-wrap"><table class="settings-rate-table settings-route-rates-table">
+      <thead><tr><th>Route No.</th><th>Origin</th><th>Destination</th><th>Capacity</th><th>Hauling rate (₱)</th><th>Active</th><th>Save</th></tr></thead>
+      <tbody>${rates.map((rate) => {
+        const route = getRoute(rate);
+        const routeLabel = `Route ${route?.route_number ?? rate.route_id ?? "—"}: ${rate.origin_code} to ${rate.destination_code}, ${rate.pallet_capacity} pallets`;
+        return `<tr>
+          <td>${escapeHtml(route?.route_number ?? rate.route_id ?? "—")}</td>
+          <td>${escapeHtml(rate.origin_code)}</td>
+          <td>${escapeHtml(rate.destination_code)}</td>
+          <td>${escapeHtml(rate.pallet_capacity)} pallets</td>
+          <td><input form="settings-rate-form-${escapeHtml(rate.id)}" id="settings-rate-${escapeHtml(rate.id)}" name="hauling_rate" type="number" min="0" step="0.01" value="${rate.hauling_rate == null ? "" : escapeHtml(rate.hauling_rate)}" placeholder="Not configured" />
+            <label class="sr-only" for="settings-rate-${escapeHtml(rate.id)}">Hauling rate for ${escapeHtml(routeLabel)}</label></td>
+          <td><label class="settings-active-control"><input form="settings-rate-form-${escapeHtml(rate.id)}" name="active" type="checkbox" ${rate.active === false ? "" : "checked"} /> Active</label></td>
+          <td><form id="settings-rate-form-${escapeHtml(rate.id)}" class="settings-route-rate-form settings-inline-form" data-rate-id="${escapeHtml(rate.id)}">
+            <button class="button button-secondary button-small" type="submit">Save rate</button></form></td>
+        </tr>`;
+      }).join("") || '<tr><td colspan="7">No truck route rates are configured.</td></tr>'}</tbody>
+    </table></div>
+  </section>`;
+}
+
+async function loadSettings(force = false) {
+  if (state.settings.loading || (state.settings.data && !force)) return;
+  state.settings.loading = true;
+  state.settings.error = "";
+  try {
+    state.settings.data = await api("/api/settings");
+  } catch (error) {
+    state.settings.error = error.message || "Could not load system settings.";
+  } finally {
+    state.settings.loading = false;
+    if (state.page === "settings") render();
+  }
+}
+
+function renderSettings() {
+  if (state.data.user?.role !== "administrator") return "";
+  if (!state.settings.data && !state.settings.loading && !state.settings.error) {
+    loadSettings();
+  }
+  let content = "";
+  if (state.settings.section === "financial") {
+    content = state.settings.loading && !state.settings.data
+      ? '<section class="panel"><p>Loading financial settings…</p></section>'
+      : state.settings.error && !state.settings.data
+        ? `<section class="error-card"><p>${escapeHtml(state.settings.error)}</p><button class="button button-secondary" type="button" data-action="settings-retry">Retry</button></section>`
+        : state.settings.data ? renderFinancialSettings() : "";
+  } else if (state.settings.section === "truck-rates") {
+    content = state.settings.loading && !state.settings.data
+        ? '<section class="panel"><p>Loading truck route rates…</p></section>'
+        : state.settings.error && !state.settings.data
+          ? `<section class="error-card"><p>${escapeHtml(state.settings.error)}</p><button class="button button-secondary" type="button" data-action="settings-retry">Retry</button></section>`
+          : state.settings.data ? renderTruckRouteRates() : "";
+  } else if (state.settings.section === "fleet") {
+    content = renderResource("vehicles");
+  } else if (state.settings.section === "drivers") {
+    content = renderResource("drivers");
+  } else if (state.settings.section === "assignments") {
+    content = renderResource("assignments");
+  } else if (state.settings.section === "dispatch") {
+    if (
+      !state.dispatch.loaded
+      && !state.dispatch.loading
+      && !state.dispatch.error
+    ) {
+      loadDispatchWorkflow();
+    }
+    content = state.dispatch.error && !state.dispatch.loaded
+      ? `<section class="error-card"><p>${escapeHtml(state.dispatch.error)}</p><button class="button button-secondary" type="button" data-action="dispatch-reload">Retry dispatch configuration</button></section>`
+      : state.dispatch.loaded
+        ? dispatchAdminSetup()
+        : '<section class="panel"><p>Loading dispatch configuration…</p></section>';
+  }
+  return `
+    ${header("ADMINISTRATION", "Settings", "Adjust financial rates and manage fleet and dispatch configuration.")}
+    ${settingsSectionNavigation()}
+    <div class="settings-content">${content}</div>`;
+}
+
+async function submitSettingsForm(form) {
+  const formType = form.classList.contains("settings-payroll-rates-form")
+    ? "driver-pay-rates"
+    : form.classList.contains("settings-route-rate-form")
+      ? "truck-rate"
+      : "route";
+  const formData = new FormData(form);
+  const active = formType === "driver-pay-rates"
+    ? null
+    : form.elements.namedItem("active").checked;
+  const payload = formType === "driver-pay-rates"
+    ? { short: formData.get("short"), long: formData.get("long") }
+    : formType === "truck-rate"
+      ? {
+      hauling_rate: formData.get("hauling_rate"),
+        active,
+      }
+      : {
+      fuel_allocation: formData.get("fuel_allocation"),
+        active,
+      };
+  const submit = form.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  try {
+    const url = formType === "driver-pay-rates"
+      ? "/api/settings/driver-pay-rates"
+      : formType === "truck-rate"
+        ? `/api/settings/truck-rates/${encodeURIComponent(form.dataset.rateId)}`
+        : `/api/settings/routes/${encodeURIComponent(form.dataset.routeId)}`;
+    await api(url, { method: "PUT", body: payload });
+    await loadSettings(true);
+    showToast("Settings saved.");
+  } catch (error) {
+    showToast(error.message || "Could not save settings.", "error");
+    if (submit.isConnected) submit.disabled = false;
+  }
+}
+
 function render() {
   if (!state.data) return;
   for (const url of Object.values(state.dispatch.previewUrls)) {
@@ -4253,12 +5211,44 @@ function render() {
   navigation.hidden = false;
   const isDedicatedAddTripPage =
     window.location.pathname === "/dispatcher/add-trip" && !window.location.hash;
-  const dispatcherPages = new Set(["dashboard", "trips", "fuel", "maintenance", "tires"]);
   const isDispatcher = state.data.user?.role === "dispatcher";
+  const isAdministrator = state.data.user?.role === "administrator";
+  const legacySettingsSections = {
+    vehicles: "fleet",
+    drivers: "drivers",
+    assignments: "assignments",
+  };
+  const requestedPage = location.hash.slice(1);
+  if (legacySettingsSections[requestedPage]) {
+    if (isAdministrator) {
+      state.settings.section = legacySettingsSections[requestedPage];
+      location.hash = "settings";
+    } else {
+      location.hash = "dashboard";
+      showToast("You are not authorized to access this page.", "error");
+    }
+  }
   if (isDedicatedAddTripPage) {
     state.page = "trips";
   } else {
     state.page = location.hash.slice(1) in TITLES ? location.hash.slice(1) : "dashboard";
+  }
+  if (
+    state.page === "completed-trips"
+    && state.data.user?.can_add_completed_trip !== true
+  ) {
+    state.page = "dashboard";
+    location.hash = "dashboard";
+    showToast("You are not authorized to access this page.", "error");
+  }
+  if (state.page === "settings" && !isAdministrator) {
+    state.page = "dashboard";
+    location.hash = "dashboard";
+    showToast("Settings are only available to administrators.", "error");
+  }
+  const dispatcherPages = new Set(["dashboard", "trips", "fuel", "maintenance", "tires"]);
+  if (state.data.user?.can_add_completed_trip === true) {
+    dispatcherPages.add("completed-trips");
   }
   if (state.page !== "trips" && isDispatcher) {
     state.dispatch.tab = "departures";
@@ -4267,9 +5257,14 @@ function render() {
     location.hash = "dashboard";
     state.page = "dashboard";
   }
+  if (state.page === "trip-records" && !isAdministrator) {
+    location.hash = "dashboard";
+    state.page = "dashboard";
+  }
+  syncCompletedTripsNavigation();
   document.querySelectorAll(".nav-link").forEach((link) => {
     link.hidden = (isDispatcher && link.dataset.page && !dispatcherPages.has(link.dataset.page))
-      || (link.dataset.role === "administrator" && isDispatcher);
+      || (link.dataset.role === "administrator" && !isAdministrator);
   });
   document.querySelectorAll(".nav-group").forEach((group) => {
     group.hidden = !group.querySelector(".nav-link:not([hidden])");
@@ -4304,7 +5299,10 @@ function render() {
       ? renderDashboard()
       : state.page === "payroll" ? renderPayroll()
         : state.page === "revenue" ? revenueDashboardMarkup(state.revenue.report)
-          : renderResource(state.page);
+            : state.page === "trip-records" ? renderTripRecords()
+                : state.page === "completed-trips" ? renderCompletedTrips()
+                    : state.page === "settings" ? renderSettings()
+                : renderResource(state.page);
   }
   const dispatchDepartureForm = view.querySelector(".dispatch-departure-form");
   if (dispatchDepartureForm) {
@@ -4321,6 +5319,14 @@ function render() {
     || (!state.tires.loading && !state.tires.summary && !state.tires.error)
   )) {
     loadTireMonitoring();
+  }
+  if (
+    state.page === "completed-trips"
+    && state.data.user?.can_add_completed_trip === true
+    && !state.completedTrips.loading
+    && state.completedTrips.requestedKey !== completedTripFilterKey()
+  ) {
+    loadCompletedTrips();
   }
   view.querySelectorAll('form[data-form="trips"]:not(.trip-wizard-form), .trip-edit-form').forEach((form) => {
     refreshTripDestinationOptions(form);
@@ -5264,6 +6270,43 @@ async function exportTripHistory() {
 }
 
 view.addEventListener("submit", (event) => {
+  const settingsForm = event.target.closest(
+    ".settings-payroll-rates-form, .settings-route-rate-form, .settings-route-form",
+  );
+  if (settingsForm) {
+    event.preventDefault();
+    submitSettingsForm(settingsForm);
+    return;
+  }
+  const departureDocumentForm = event.target.closest(
+    ".dispatch-departure-document-form",
+  );
+  if (departureDocumentForm) {
+    event.preventDefault();
+    if (departureDocumentForm.reportValidity()) {
+      submitDispatchDepartureDocument(departureDocumentForm);
+    }
+    return;
+  }
+  const completedTripForm = event.target.closest(".completed-trip-form");
+  if (completedTripForm) {
+    event.preventDefault();
+    submitCompletedTripForm(completedTripForm);
+    return;
+  }
+  const completedTripFilter = event.target.closest(".completed-trip-filter-form");
+  if (completedTripFilter) {
+    event.preventDefault();
+    const formData = new FormData(completedTripFilter);
+    for (const key of [
+      "origin", "destination", "date_from", "date_to", "sort_by", "sort_dir",
+    ]) {
+      state.completedTrips[key] = String(formData.get(key) || "").trim();
+    }
+    state.completedTrips.requestedKey = "";
+    loadCompletedTrips(true);
+    return;
+  }
   const dispatchDeparture = event.target.closest(".dispatch-departure-form");
   if (dispatchDeparture) {
     event.preventDefault();
@@ -5372,6 +6415,9 @@ view.addEventListener("input", (event) => {
     };
     const stateField = stateFields[event.target.name];
     if (stateField) state.dispatch[stateField] = event.target.value;
+    if (event.target.name === "destination_location_id") {
+      updateDispatchFuelAllocationDefault(dispatchForm);
+    }
     if (event.target.name === "pallet_quantity") validateDispatchPalletQuantity(dispatchForm);
     if (event.target.name === "load_catalog_search") {
       const position = event.target.selectionStart;
@@ -5454,6 +6500,22 @@ view.addEventListener("input", (event) => {
     }, 140);
     return;
   }
+  if (event.target.id === "trip-record-search") {
+    const position = event.target.selectionStart;
+    const restoreFocus = document.activeElement === event.target;
+    state.tripRecords.search = event.target.value;
+    state.tripRecords.page = 1;
+    window.clearTimeout(searchRenderTimer);
+    searchRenderTimer = window.setTimeout(() => {
+      state.tripRecords.requestedKey = "";
+      render();
+      if (!restoreFocus) return;
+      const nextInput = document.querySelector("#trip-record-search");
+      nextInput?.focus();
+      nextInput?.setSelectionRange(position, position);
+    }, 180);
+    return;
+  }
   if (event.target.id !== "record-search") return;
   const position = event.target.selectionStart;
   const restoreFocus = document.activeElement === event.target;
@@ -5468,9 +6530,110 @@ view.addEventListener("input", (event) => {
   }, 140);
 });
 
-view.addEventListener("click", (event) => {
+view.addEventListener("click", async (event) => {
   const button = event.target.closest("[data-action]");
   if (!button) return;
+  if (button.dataset.action === "settings-section") {
+    if (state.data?.user?.role !== "administrator") return;
+    state.settings.section = button.dataset.section;
+    state.search = "";
+    if (state.settings.section === "fleet") state.vehicleSection = "trucks";
+    render();
+    return;
+  }
+  if (button.dataset.action === "settings-retry") {
+    state.settings.error = "";
+    loadSettings(true);
+    return;
+  }
+  if (button.dataset.action === "completed-trip-add") {
+    state.completedTrips.editingId = null;
+    state.completedTrips.formError = "";
+    state.completedTrips.formOpen = true;
+    render();
+    view.querySelector(".completed-trip-form input[name='title']")?.focus();
+    return;
+  }
+  if (button.dataset.action === "completed-trip-cancel") {
+    state.completedTrips.editingId = null;
+    state.completedTrips.formError = "";
+    state.completedTrips.formOpen = false;
+    render();
+    return;
+  }
+  if (button.dataset.action === "completed-trip-view") {
+    openCompletedTripDetails(button.dataset.id);
+    return;
+  }
+  if (button.dataset.action === "completed-trip-close-details") {
+    button.closest("dialog")?.close();
+    return;
+  }
+  if (button.dataset.action === "completed-trip-edit") {
+    state.completedTrips.editingId = button.dataset.id;
+    state.completedTrips.formError = "";
+    state.completedTrips.formOpen = true;
+    render();
+    view.querySelector(".completed-trip-form input[name='title']")?.focus();
+    return;
+  }
+  if (button.dataset.action === "completed-trip-delete") {
+    if (!window.confirm("Delete this completed trip? This cannot be undone.")) return;
+    button.disabled = true;
+    try {
+      const response = await api(
+        `/api/completed-trips/${encodeURIComponent(button.dataset.id)}`,
+        { method: "DELETE" },
+      );
+      state.completedTrips.records = state.completedTrips.records.filter(
+        (trip) => String(trip.id) !== String(button.dataset.id),
+      );
+      render();
+      showToast(response.warning || "Completed trip deleted.", response.warning ? "error" : "success");
+    } catch (error) {
+      showToast(error.message || "Could not delete the completed trip.", "error");
+      button.disabled = false;
+    }
+    return;
+  }
+  if (button.dataset.action === "completed-trip-retry") {
+    state.completedTrips.requestedKey = "";
+    loadCompletedTrips(true);
+    return;
+  }
+  if (button.dataset.action === "trip-record-page") {
+    state.tripRecords.page = Number(button.dataset.page) || 1;
+    state.tripRecords.requestedKey = "";
+    render();
+    return;
+  }
+  if (button.dataset.action === "trip-record-sort") {
+    const sort = button.dataset.sort;
+    if (!["recorded_at", "trip_id", "origin", "destination", "driver", "status", "rate"].includes(sort)) return;
+    if (state.tripRecords.sort === sort) {
+      state.tripRecords.sort_dir = state.tripRecords.sort_dir === "asc" ? "desc" : "asc";
+    } else {
+      state.tripRecords.sort = sort;
+      state.tripRecords.sort_dir = sort === "recorded_at" ? "desc" : "asc";
+    }
+    state.tripRecords.page = 1;
+    state.tripRecords.requestedKey = "";
+    render();
+    return;
+  }
+  if (button.dataset.action === "trip-record-retry") {
+    state.tripRecords.requestedKey = "";
+    loadTripRecords({ force: true });
+    return;
+  }
+  if (button.dataset.action === "close-trip-record-detail") {
+    button.closest("dialog")?.close();
+    return;
+  }
+  if (button.dataset.action === "trip-record-detail") {
+    openTripRecordDetails(button.dataset.id);
+    return;
+  }
   if (button.dataset.action === "dispatcher-open-queue") {
     state.dispatch.tab = button.dataset.tab === "departures" ? "departures" : "arrivals";
     state.dispatch.page = 1;
@@ -5569,6 +6732,7 @@ view.addEventListener("click", (event) => {
   }
   if (button.dataset.action === "dispatch-reload") {
     state.dispatch.loaded = false;
+    state.dispatch.error = "";
     loadDispatchWorkflow({ force: true });
     return;
   }
@@ -5908,6 +7072,7 @@ view.addEventListener("change", (event) => {
   if (event.target.matches("[data-dispatch-origin]")) {
     state.dispatch.departureOrigin = event.target.value;
     state.dispatch.departureDestination = "";
+    state.dispatch.departureFuelAllocation = "";
     refreshDispatchDestinations(event.target.form);
   }
   const dispatchForm = event.target.form?.matches(".dispatch-departure-form")
@@ -5924,13 +7089,29 @@ view.addEventListener("change", (event) => {
     const stateField = stateFields[event.target.name];
     if (stateField) state.dispatch[stateField] = event.target.value;
     if (event.target.name === "load_type") {
+      const palletQuantity = dispatchForm.elements.namedItem("pallet_quantity");
+      if (event.target.value === "NO_LOAD") {
+        palletQuantity.value = "0";
+        palletQuantity.min = "0";
+        palletQuantity.readOnly = true;
+        state.dispatch.departurePalletQuantity = "0";
+      } else {
+        palletQuantity.readOnly = false;
+        palletQuantity.min = "1";
+        if (palletQuantity.value === "0") {
+          palletQuantity.value = "";
+          state.dispatch.departurePalletQuantity = "";
+        }
+      }
       const emptySummary = dispatchForm.querySelector(
         '.dispatch-wizard-step[data-step="4"] .dispatch-selected-load',
       );
       if (emptySummary) {
-        emptySummary.innerHTML = event.target.value === "EMPTIES"
-          ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>'
-          : dispatchLoadItemsMarkup();
+        emptySummary.innerHTML = event.target.value === "NO_LOAD"
+          ? '<p class="dispatch-load-empty">No load or pallets are recorded for this movement.</p>'
+          : event.target.value === "EMPTIES"
+            ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>'
+            : dispatchLoadItemsMarkup();
       }
       renderDispatchLoadSelection(dispatchForm);
       dispatchForm.querySelector(".dispatch-form-error").hidden = true;
@@ -5947,6 +7128,7 @@ view.addEventListener("change", (event) => {
           ? `Trailer capacity: <strong>${formatNumber(trailer.pallet_capacity)} pallets</strong>`
           : "Select a trailer to see its pallet capacity.";
       });
+
     }
     if (state.dispatch.departureWizardStep === 6) {
       dispatchForm.querySelector(".dispatch-wizard-review").innerHTML =
@@ -5990,12 +7172,31 @@ view.addEventListener("keydown", (event) => {
     return;
   }
   const row = event.target.closest('tr[data-action="trip-details"]');
+  const tripRecordRow = event.target.closest('tr[data-action="trip-record-detail"]');
+  if (tripRecordRow && ["Enter", " "].includes(event.key)) {
+    event.preventDefault();
+    openTripRecordDetails(tripRecordRow.dataset.id);
+    return;
+  }
   if (!row || event.target.matches("input") || !["Enter", " "].includes(event.key)) return;
   event.preventDefault();
   openTripDetails(row.dataset.id);
 });
 
 view.addEventListener("change", (event) => {
+  const tripRecordFilter = event.target.closest("[data-trip-record-filter]");
+  if (tripRecordFilter) {
+    const key = tripRecordFilter.dataset.tripRecordFilter;
+    if (key in state.tripRecords) {
+      state.tripRecords[key] = key === "page_size"
+        ? Number(tripRecordFilter.value)
+        : tripRecordFilter.value;
+      state.tripRecords.page = 1;
+      state.tripRecords.requestedKey = "";
+      render();
+    }
+    return;
+  }
   const tireFilters = event.target.closest("#tire-filter-form");
   if (tireFilters && event.target.matches("[data-tire-filter]")) {
     const values = Object.fromEntries(new FormData(tireFilters).entries());
@@ -6171,7 +7372,12 @@ document.addEventListener("keydown", (event) => {
 });
 
 document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) refreshNotifications();
+  if (document.hidden) return;
+  if (state.data) {
+    lastActivityPing = 0;
+    registerSessionActivity();
+  }
+  refreshNotifications();
 });
 
 document.querySelector("#sign-out").addEventListener("click", async (event) => {

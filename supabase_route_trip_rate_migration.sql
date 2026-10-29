@@ -78,7 +78,7 @@ join (values
     ('DAV2', 'PLAS', 46, 2200.00::numeric),
     ('GENSAN', 'DAV2', 36, 11000.00::numeric),
     ('GENSAN', 'DAV2', 46, 14000.00::numeric),
-    ('GENSAN', 'DAV1', 36, 12284.85::numeric),
+    ('GENSAN', 'DAV1', 36, 12268.90::numeric),
     ('GENSAN', 'DAV1', 46, 15500.00::numeric),
     ('GENSAN', 'PLAS', 36, 11000.00::numeric),
     ('GENSAN', 'PLAS', 46, 14000.00::numeric),

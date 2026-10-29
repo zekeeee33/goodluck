@@ -1495,6 +1495,58 @@ class FleetManager:
     def list_truck_routes(self) -> List[Dict[str, Any]]:
         return self._list("truck_routes", order=("route_number", "asc"))
 
+    def list_driver_pay_rates(self) -> List[Dict[str, Any]]:
+        return self._list("driver_pay_rates", order=("route_class", "asc"))
+
+    def update_driver_pay_rates(
+        self, allowances: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
+        if set(allowances) != {"short", "long"}:
+            raise FleetManagementError("Both short- and long-route allowances are required.")
+        response = self._execute(
+            self.client.rpc(
+                "update_driver_pay_rates",
+                {
+                    "p_short_allowance": str(allowances["short"]),
+                    "p_long_allowance": str(allowances["long"]),
+                },
+            )
+        )
+        if not response.data:
+            raise FleetManagementError(
+                "Driver trip allowances are not configured. Apply "
+                "supabase_settings_migration.sql in Supabase."
+            )
+        return [dict(row) for row in response.data]
+
+    def update_truck_route_rate(
+        self, rate_id: int, hauling_rate: Optional[Any], active: bool
+    ) -> Dict[str, Any]:
+        values = {"hauling_rate": hauling_rate, "active": active}
+        response = self._execute(
+            self.client.table("truck_route_rates")
+            .update(values)
+            .eq("id", rate_id)
+            .select("*")
+        )
+        if not response.data:
+            raise FleetManagementError(f"Truck route rate {rate_id} not found")
+        return dict(response.data[0])
+
+    def update_truck_route(
+        self, route_id: int, fuel_allocation: Optional[Any], active: bool
+    ) -> Dict[str, Any]:
+        values = {"fuel_allocation": fuel_allocation, "active": active}
+        response = self._execute(
+            self.client.table("truck_routes")
+            .update(values)
+            .eq("id", route_id)
+            .select("*")
+        )
+        if not response.data:
+            raise FleetManagementError(f"Truck route {route_id} not found")
+        return dict(response.data[0])
+
     def list_trailers(self) -> List[Dict[str, Any]]:
         return self._list("trailers", order=("plate_number", "asc"))
 

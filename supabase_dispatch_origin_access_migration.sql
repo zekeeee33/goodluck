@@ -212,7 +212,10 @@ begin
             or (
                 p_queue = 'arrivals'
                 and movement.status <> 'completed'
-                and movement.departure_document_ready
+                and (
+                    public.dispatch_is_admin()
+                    or movement.departure_document_ready
+                )
                 and public.dispatch_has_location(movement.destination_location_id, 'arrive')
             )
             or (

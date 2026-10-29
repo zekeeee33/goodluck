@@ -35,6 +35,11 @@ form.addEventListener("submit", async (event) => {
     });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.error || "Sign-in failed.");
+    if ("BroadcastChannel" in window) {
+      const channel = new BroadcastChannel("glfs-auth-session");
+      channel.postMessage("session-changed");
+      channel.close();
+    }
     window.location.replace(payload.redirect || "/");
   } catch (error) {
     errorMessage.textContent = error.message || "Unable to sign in. Please try again.";

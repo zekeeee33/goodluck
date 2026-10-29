@@ -9,7 +9,7 @@ import secrets
 import time
 import uuid
 import warnings
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
 from typing import Any
@@ -140,9 +140,14 @@ def _dispatch_rpc(function_name: str, params: dict[str, Any] | None = None) -> A
                 "queues for an existing departure or enter the correct unique ISM number."
             ) from exc
         if code == "PGRST202":
+            migration = (
+                "supabase_trip_records_migration.sql"
+                if function_name == "admin_trip_records_page"
+                else "the latest location-dispatch migration"
+            )
             raise FleetManagementError(
                 f"Dispatch database function '{function_name}' is missing. "
-                "Apply the latest location-dispatch migration."
+                f"Apply {migration}."
             ) from exc
         if code == "42501":
             raise FleetManagementError(
@@ -206,8 +211,68 @@ def _role_for_auth_user(user: Any) -> str:
     return "administrator"
 
 
+def _set_authenticated_identity(user: Any) -> None:
+    email = str(getattr(user, "email", None) or "").strip().lower()
+    verified_at = (
+        getattr(user, "email_confirmed_at", None)
+        or getattr(user, "confirmed_at", None)
+    )
+    g.authenticated_user_id = str(getattr(user, "id", "") or "")
+    g.authenticated_email = email
+    g.authenticated_email_verified = bool(verified_at)
+
+
+def _completed_trip_access_state() -> tuple[bool, str | None]:
+    if (
+        not getattr(g, "authenticated_email_verified", False)
+        or getattr(g, "authenticated_email", "") != "sceratoconcepts@gmail.com"
+        or not getattr(g, "authenticated_user_id", "")
+    ):
+        return False, None
+    try:
+        response = get_dispatch_client().rpc(
+            "completed_trip_access_allowed"
+        ).execute()
+    except Exception:
+        logger.exception("Could not verify private completed-trip access.")
+        return False, (
+            "Private completed-trip access is not configured. Apply "
+            "supabase_completed_trips_migration.sql after verifying the account."
+        )
+    result = response.data
+    if isinstance(result, list) and len(result) == 1:
+        result = result[0]
+    if isinstance(result, dict):
+        result = result.get("completed_trip_access_allowed")
+    if result is not True:
+        if result is not False:
+            logger.error("Completed-trip access check returned an unexpected response.")
+            return False, (
+                "Could not verify completed-trip access. Check the Supabase "
+                "migration and restart the application."
+            )
+        return False, (
+            "This account is verified, but its Supabase user ID is not enabled "
+            "for completed trips. Re-run supabase_completed_trips_migration.sql."
+        )
+    return True, None
+
+
+def _completed_trip_request_owner() -> tuple[str | None, Any | None]:
+    allowed, error = _completed_trip_access_state()
+    if error:
+        return None, _json_error(error, 503)
+    if not allowed:
+        return None, _json_error(
+            "You are not authorized to access completed trips.", 403
+        )
+    return str(g.authenticated_user_id), None
+
+
 def _authorize_dispatcher_request() -> Any:
     if not _is_dispatcher():
+        return None
+    if request.path.startswith("/api/completed-trips"):
         return None
     if request.path.startswith("/api/payroll") or request.path == "/api/export":
         return _json_error("This function is only available to administrators.", 403)
@@ -301,6 +366,9 @@ def enforce_authentication() -> Any:
 
     if app.testing and app.config.get("TEST_AUTH_BYPASS"):
         g.current_user = {"id": "test-user", "email": "test@example.com", "role": "administrator"}
+        g.authenticated_user_id = "test-user"
+        g.authenticated_email = "test@example.com"
+        g.authenticated_email_verified = False
         session.setdefault("user_role", "administrator")
         return None
 
@@ -332,6 +400,7 @@ def enforce_authentication() -> Any:
                         or (getattr(user, "user_metadata", None) or {}).get("name")
                     ),
                 }
+                _set_authenticated_identity(user)
                 return _authorize_dispatcher_request()
         except Exception:
             pass
@@ -356,6 +425,7 @@ def enforce_authentication() -> Any:
                         or (getattr(user, "user_metadata", None) or {}).get("name")
                     ),
                 }
+                _set_authenticated_identity(user)
                 return _authorize_dispatcher_request()
         except Exception as exc:
             status = getattr(exc, "status", None)
@@ -522,9 +592,14 @@ def auth_logout() -> Any:
 
 @app.route("/api/auth/me")
 def auth_me() -> Any:
+    current_user = dict(g.current_user or {})
+    can_add_completed_trip, access_error = _completed_trip_access_state()
+    current_user["can_add_completed_trip"] = can_add_completed_trip
+    if access_error:
+        current_user["completed_trip_access_error"] = access_error
     return jsonify(
         {
-            "user": g.current_user,
+            "user": current_user,
             "csrf_token": session.get("csrf_token"),
         }
     )
@@ -534,6 +609,11 @@ def auth_me() -> Any:
 def bootstrap() -> Any:
     fleet = get_manager()
     user_id = str((g.current_user or {}).get("id") or session.get("user_id") or "")
+    bootstrap_user = dict(g.current_user or {})
+    can_add_completed_trip, access_error = _completed_trip_access_state()
+    bootstrap_user["can_add_completed_trip"] = can_add_completed_trip
+    if access_error:
+        bootstrap_user["completed_trip_access_error"] = access_error
     if _is_dispatcher():
         if not user_id:
             return _json_error("Authenticated dispatcher identity is missing.", 403)
@@ -577,7 +657,7 @@ def bootstrap() -> Any:
                 "truck_routes": fleet.list_truck_routes(),
                 "truck_route_rates": fleet.list_truck_route_rates(),
                 "csrf_token": session.get("csrf_token"),
-                "user": g.current_user,
+                "user": bootstrap_user,
             }
         )
     trips = fleet.list_trips(include_fuel=False)
@@ -611,7 +691,7 @@ def bootstrap() -> Any:
             "truck_routes": fleet.list_truck_routes(),
             "truck_route_rates": fleet.list_truck_route_rates(),
             "csrf_token": session.get("csrf_token"),
-            "user": g.current_user,
+            "user": bootstrap_user,
         }
     )
 
@@ -627,6 +707,398 @@ def _dispatch_timestamp(value: Any, field_name: str) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=BUSINESS_TIMEZONE)
     return parsed.isoformat()
+
+
+def _completed_trip_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    ism_no = str(payload.get("ism_no") or "").strip()
+    if not ism_no:
+        raise ValueError("ISM No is required.")
+    if len(ism_no) > 80:
+        raise ValueError("ISM No must be 80 characters or fewer.")
+
+    try:
+        shipment_date = date.fromisoformat(
+            str(payload.get("shipment_date") or "").strip()
+        )
+    except ValueError as exc:
+        raise ValueError("Shipment date must be a valid date.") from exc
+
+    text_fields = {
+        "origin": ("Origin", 300, True),
+        "destination": ("Destination", 300, True),
+        "truck_plate": ("Truck plate", 100, False),
+        "trailer_plate": ("Trailer plate", 100, False),
+        "load": ("Load", 500, False),
+        "driver": ("Driver", 200, False),
+        "trip_fuel": ("Trip/Fuel", 5000, False),
+    }
+    values: dict[str, Any] = {}
+    for field, (label, max_length, required) in text_fields.items():
+        value = str(payload.get(field) or "").strip()
+        if required and not value:
+            raise ValueError(f"{label} is required.")
+        if len(value) > max_length:
+            raise ValueError(f"{label} must be {max_length} characters or fewer.")
+        values[field] = value or None
+
+    def optional_integer(field: str, label: str, maximum: int) -> int | None:
+        raw_value = payload.get(field)
+        if raw_value in (None, ""):
+            return None
+        try:
+            number = Decimal(str(raw_value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{label} must be a whole number.") from exc
+        if not number.is_finite() or number != number.to_integral_value():
+            raise ValueError(f"{label} must be a whole number.")
+        result = int(number)
+        if result < 1 or result > maximum:
+            raise ValueError(f"{label} must be between 1 and {maximum}.")
+        return result
+
+    def optional_amount(field: str, label: str) -> float | None:
+        raw_value = payload.get(field)
+        if raw_value in (None, ""):
+            return None
+        try:
+            amount = Decimal(str(raw_value))
+        except (InvalidOperation, ValueError) as exc:
+            raise ValueError(f"{label} must be a valid amount.") from exc
+        if not amount.is_finite() or amount < 0:
+            raise ValueError(f"{label} cannot be negative.")
+        if amount > Decimal("9999999999.99"):
+            raise ValueError(f"{label} is too large.")
+        return float(amount)
+
+    def optional_time(field: str, label: str) -> datetime_time | None:
+        raw_value = str(payload.get(field) or "").strip()
+        if not raw_value:
+            return None
+        for time_format in ("%H:%M", "%H:%M:%S"):
+            try:
+                return datetime.strptime(raw_value, time_format).time()
+            except ValueError:
+                continue
+        raise ValueError(f"{label} must be a valid time.")
+
+    time_in = optional_time("time_in", "Time in")
+    time_out = optional_time("time_out", "Time out")
+    departure_time = time_out or datetime_time.min
+    arrival_time = time_in or departure_time
+    departure = datetime.combine(shipment_date, departure_time, BUSINESS_TIMEZONE)
+    arrival_date = shipment_date
+    if time_in and time_out and arrival_time < departure_time:
+        arrival_date += timedelta(days=1)
+    arrival = datetime.combine(arrival_date, arrival_time, BUSINESS_TIMEZONE)
+    if arrival < departure:
+        raise ValueError("Time in cannot be earlier than time out on the shipment date.")
+
+    route_number = optional_integer("route_number", "Route No.", 2_147_483_647)
+    pallet_capacity = optional_integer(
+        "pallet_capacity", "Pallet capacity", 2_147_483_647
+    )
+    trip_rate = optional_amount("trip_rate", "Trip rate")
+    fuel_allocation = optional_amount("fuel_allocation", "Fuel allocation")
+    actual_fuel = optional_amount("actual_fuel", "Actual fuel")
+    return {
+        "title": ism_no,
+        "ism_no": ism_no,
+        "shipment_date": shipment_date.isoformat(),
+        "origin": values["origin"],
+        "starting_location": values["origin"],
+        "destination": values["destination"],
+        "route_number": route_number,
+        "truck_plate": values["truck_plate"],
+        "trailer_plate": values["trailer_plate"],
+        "pallet_capacity": pallet_capacity,
+        "trip_rate": trip_rate,
+        "fuel_allocation": fuel_allocation,
+        "actual_fuel": actual_fuel,
+        "time_in": time_in.isoformat() if time_in else None,
+        "time_out": time_out.isoformat() if time_out else None,
+        "departure_at": departure.isoformat(),
+        "arrival_at": arrival.isoformat(),
+        "distance": None,
+        "distance_unit": None,
+        "transportation_type": None,
+        "load": values["load"],
+        "driver": values["driver"],
+        "trip_fuel": values["trip_fuel"],
+        "notes": values["trip_fuel"],
+    }
+
+
+def _completed_trip_row_for_owner(trip_id: int, owner_id: str) -> dict[str, Any] | None:
+    response = (
+        get_dispatch_client()
+        .table("completed_trips")
+        .select("*")
+        .eq("id", trip_id)
+        .eq("owner_id", owner_id)
+        .limit(1)
+        .execute()
+    )
+    rows = response.data or []
+    return dict(rows[0]) if rows else None
+
+
+def _completed_trip_rows_for_response(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    result = []
+    for row in rows:
+        item = dict(row)
+        item.pop("attachment_object_path", None)
+        for kind in ("manifest", "fuel-receipt"):
+            field = "fuel_receipt" if kind == "fuel-receipt" else kind
+            object_path = item.pop(f"{field}_object_path", None)
+            if object_path:
+                item[f"{field}_url"] = url_for(
+                    "completed_trip_file", trip_id=item["id"], kind=kind
+                )
+        result.append(item)
+    return result
+
+
+@app.route("/api/completed-trips", methods=["GET", "POST"])
+def completed_trip_collection() -> Any:
+    owner_id, error = _completed_trip_request_owner()
+    if error:
+        return error
+
+    try:
+        if request.method == "POST":
+            payload = _completed_trip_payload(_body())
+            payload["owner_id"] = owner_id
+            client = get_dispatch_client()
+            response = (
+                client.table("completed_trips")
+                .insert(payload)
+                .select("*")
+                .execute()
+            )
+            if not response.data:
+                logger.error("Completed trip insert returned no record.")
+                return _json_error("Could not save the completed trip. Please retry.", 503)
+            return jsonify({
+                "data": _completed_trip_rows_for_response(response.data)[0]
+            }), 201
+
+        sort_fields = {
+            "shipment_date": "shipment_date",
+            "ism_no": "ism_no",
+            "origin": "origin",
+            "destination": "destination",
+            "route_number": "route_number",
+        }
+        client = get_dispatch_client()
+        sort_by = request.args.get("sort_by", "shipment_date")
+        sort_dir = request.args.get("sort_dir", "desc").lower()
+        if sort_by not in sort_fields:
+            raise ValueError("Choose a valid completed trip sort order.")
+        if sort_dir not in {"asc", "desc"}:
+            raise ValueError("Choose ascending or descending sort order.")
+        query = client.table("completed_trips").select("*").eq("owner_id", owner_id)
+
+        destination = request.args.get("destination", "").strip()
+        if len(destination) > 100:
+            raise ValueError("Destination filter must be 100 characters or fewer.")
+        if destination:
+            query = query.ilike("destination", f"%{destination}%")
+        origin = request.args.get("origin", "").strip()
+        if len(origin) > 100:
+            raise ValueError("Origin filter must be 100 characters or fewer.")
+        if origin:
+            query = query.ilike("origin", f"%{origin}%")
+        date_from = request.args.get("date_from", "").strip()
+        date_to = request.args.get("date_to", "").strip()
+        for field_name, value in (("start date", date_from), ("end date", date_to)):
+            if value:
+                try:
+                    datetime.strptime(value, "%Y-%m-%d")
+                except ValueError as exc:
+                    raise ValueError(f"Completed trip {field_name} must use YYYY-MM-DD.") from exc
+        if date_from and date_to and date_from > date_to:
+            raise ValueError("Completed trip start date cannot be after its end date.")
+        if date_from:
+            query = query.gte("shipment_date", date_from)
+        if date_to:
+            query = query.lte("shipment_date", date_to)
+        response = query.order(
+            sort_fields[sort_by], desc=sort_dir == "desc"
+        ).order("id", desc=True).execute()
+        return jsonify({"data": _completed_trip_rows_for_response(response.data or [])})
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception:
+        logger.exception("Could not process completed trip collection request.")
+        return _json_error("Could not access completed trips. Please retry.", 503)
+
+
+@app.route("/api/completed-trips/<int:trip_id>", methods=["GET", "PATCH", "DELETE"])
+def completed_trip_record(trip_id: int) -> Any:
+    owner_id, error = _completed_trip_request_owner()
+    if error:
+        return error
+
+    client = get_dispatch_client()
+    try:
+        current = _completed_trip_row_for_owner(trip_id, owner_id)
+        if current is None:
+            return _json_error("Completed trip was not found.", 404)
+        if request.method == "GET":
+            return jsonify({"data": _completed_trip_rows_for_response([current])[0]})
+        if request.method == "PATCH":
+            values = _completed_trip_payload(_body())
+            response = (
+                client.table("completed_trips")
+                .update(values)
+                .eq("id", trip_id)
+                .eq("owner_id", owner_id)
+                .select("*")
+                .execute()
+            )
+            if not response.data:
+                return _json_error("Completed trip was not found.", 404)
+            return jsonify({
+                "data": _completed_trip_rows_for_response(response.data)[0]
+            })
+
+        response = (
+            client.table("completed_trips")
+            .delete()
+            .eq("id", trip_id)
+            .eq("owner_id", owner_id)
+            .select("id")
+            .execute()
+        )
+        if not response.data:
+            return _json_error("Completed trip was not found.", 404)
+        warning = None
+        object_paths = [
+            current.get(path_field)
+            for path_field in (
+                "attachment_object_path",
+                "manifest_object_path",
+                "fuel_receipt_object_path",
+            )
+            if current.get(path_field)
+        ]
+        if object_paths:
+            try:
+                client.storage.from_("completed-trip-attachments").remove(object_paths)
+            except Exception:
+                logger.exception(
+                    "Completed trip %s was deleted but its images could not be removed.",
+                    trip_id,
+                )
+                warning = (
+                    "The trip was deleted, but one or more images could not be removed."
+                )
+        return jsonify({"message": "Completed trip deleted.", "warning": warning})
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception:
+        logger.exception("Could not process completed trip %s.", trip_id)
+        return _json_error("Could not access the completed trip. Please retry.", 503)
+
+
+@app.route("/api/completed-trips/<int:trip_id>/<kind>", methods=["GET", "POST"])
+def completed_trip_file(trip_id: int, kind: str) -> Any:
+    if kind not in {"manifest", "fuel-receipt"}:
+        return _json_error("Unsupported completed-trip image type.", 404)
+    field = "fuel_receipt" if kind == "fuel-receipt" else kind
+    object_path_field = f"{field}_object_path"
+    mime_type_field = f"{field}_mime_type"
+    owner_id, error = _completed_trip_request_owner()
+    if error:
+        return error
+
+    client = get_dispatch_client()
+    try:
+        current = _completed_trip_row_for_owner(trip_id, owner_id)
+        if current is None:
+            return _json_error("Completed trip was not found.", 404)
+        if request.method == "GET":
+            object_path = current.get(object_path_field)
+            mime_type = current.get(mime_type_field)
+            if not object_path or not mime_type:
+                return _json_error(f"This trip has no {kind} image.", 404)
+            image_bytes = client.storage.from_(
+                "completed-trip-attachments"
+            ).download(object_path)
+            extension = {
+                "image/jpeg": ".jpg",
+                "image/png": ".png",
+                "image/webp": ".webp",
+            }[mime_type]
+            response = send_file(
+                BytesIO(image_bytes),
+                mimetype=mime_type,
+                as_attachment=False,
+                download_name=f"completed-trip-{trip_id}-{kind}{extension}",
+                max_age=0,
+            )
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; img-src 'self'; sandbox"
+            )
+            return response
+
+        image_file = request.files.get("image")
+        if image_file is None:
+            return _json_error("Choose a trip image to upload.", 400)
+        image_bytes, mime_type, extension = _validated_image(image_file)
+        object_path = f"{owner_id}/{trip_id}/{kind}/{uuid.uuid4().hex}.{extension}"
+        client.storage.from_("completed-trip-attachments").upload(
+            object_path,
+            image_bytes,
+            {"content-type": mime_type, "upsert": "false"},
+        )
+        try:
+            response = (
+                client.table("completed_trips")
+                .update({
+                    object_path_field: object_path,
+                    mime_type_field: mime_type,
+                })
+                .eq("id", trip_id)
+                .eq("owner_id", owner_id)
+                .select("id")
+                .execute()
+            )
+            if not response.data:
+                raise RuntimeError("Completed trip disappeared during attachment upload.")
+        except Exception:
+            try:
+                client.storage.from_("completed-trip-attachments").remove([object_path])
+            except Exception:
+                logger.exception("Could not clean up an unattached completed-trip image.")
+            raise
+
+        warning = None
+        old_path = current.get(object_path_field)
+        if old_path:
+            try:
+                client.storage.from_("completed-trip-attachments").remove([old_path])
+            except Exception:
+                logger.exception("Could not remove a replaced completed-trip %s image.", kind)
+                warning = (
+                    f"The new {kind} image was saved, but the previous image "
+                    "could not be removed."
+                )
+        return jsonify({
+            "message": f"{kind.capitalize()} image uploaded.",
+            "image_url": url_for(
+                "completed_trip_file", trip_id=trip_id, kind=kind
+            ),
+            "warning": warning,
+        }), 201
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except Exception:
+        logger.exception(
+            "Could not process %s image for completed trip %s.", kind, trip_id
+        )
+        return _json_error("Could not access the trip image. Please retry.", 503)
 
 
 def _payload_boolean(payload: dict[str, Any], key: str, default: bool = False) -> bool:
@@ -708,6 +1180,19 @@ def dispatch_movements() -> Any:
                 "pallet_quantity": pallet_quantity,
             })
 
+        load_type = _required_text(payload, "load_type").upper()
+        pallet_quantity = _integer(payload, "pallet_quantity")
+        if load_type not in {"FULLS", "EMPTIES", "NO_LOAD"}:
+            raise ValueError("Choose FULLS, EMPTIES, or NO LOAD for the load type.")
+        if (load_type == "NO_LOAD" and pallet_quantity != 0) or (
+            load_type != "NO_LOAD" and pallet_quantity < 1
+        ):
+            raise ValueError(
+                "NO LOAD movements must have 0 pallets; other movements need at least 1."
+            )
+        if load_type in {"EMPTIES", "NO_LOAD"} and load_items:
+            raise ValueError("Only FULLS movements can include catalog products.")
+
         movement_id = _dispatch_rpc("create_dispatch_movement_with_load", {
             "p_origin_location_id": _required_text(payload, "origin_location_id").upper(),
             "p_destination_location_id": _required_text(payload, "destination_location_id").upper(),
@@ -715,8 +1200,8 @@ def dispatch_movements() -> Any:
             "p_truck_id": _integer(payload, "truck_id"),
             "p_driver_id": _integer(payload, "driver_id"),
             "p_trailer_id": _integer(payload, "trailer_id"),
-            "p_load_type": _required_text(payload, "load_type").upper(),
-            "p_pallet_quantity": _integer(payload, "pallet_quantity"),
+            "p_load_type": load_type,
+            "p_pallet_quantity": pallet_quantity,
             "p_departure_at": _dispatch_timestamp(payload.get("departure_at"), "Departure date and time"),
             "p_fuel_allocation": _optional_number(payload, "fuel_allocation"),
             "p_actual_fuel_expense": _optional_number(payload, "actual_fuel_expense"),
@@ -737,6 +1222,72 @@ def dispatch_load_catalog() -> Any:
     except FleetManagementError as exc:
         return _dispatch_error_response(exc)
     return jsonify({"products": products})
+
+
+@app.route("/api/admin/trip-records")
+def admin_trip_records() -> Any:
+    if _user_role() != "administrator" or _is_dispatcher():
+        return _json_error("Only administrators can view trip records.", 403)
+
+    try:
+        page = int(request.args.get("page", "1"))
+        page_size = int(request.args.get("page_size", "25"))
+        if page < 1 or page > 1_000_000 or page_size not in {10, 25, 50, 100}:
+            raise ValueError("Choose a valid trip records page and page size.")
+
+        date_from_text = request.args.get("date_from", "").strip()
+        date_to_text = request.args.get("date_to", "").strip()
+        date_from = date.fromisoformat(date_from_text) if date_from_text else None
+        date_to = date.fromisoformat(date_to_text) if date_to_text else None
+        if date_from and date_to and date_from > date_to:
+            raise ValueError("Start date must be on or before end date.")
+
+        load_type = request.args.get("load_type", "").strip().upper()
+        if load_type not in {"", "FULLS", "EMPTIES", "NO_LOAD"}:
+            raise ValueError("Choose FULLS, EMPTIES, or NO LOAD for the load type.")
+        status = request.args.get("status", "").strip().lower()
+        if status not in {
+            "", "completed", "awaiting_arrival", "arrival_submitted",
+            "needs_correction", "recorded",
+        }:
+            raise ValueError("Choose a valid trip status.")
+        sort = request.args.get("sort", "recorded_at")
+        if sort not in {
+            "recorded_at", "trip_id", "origin", "destination",
+            "driver", "status", "rate",
+        }:
+            raise ValueError("Choose a valid trip records sort order.")
+        sort_dir = request.args.get("sort_dir", "desc").lower()
+        if sort_dir not in {"asc", "desc"}:
+            raise ValueError("Choose ascending or descending sort order.")
+
+        params = {
+            "p_page": page,
+            "p_page_size": page_size,
+            "p_search": request.args.get("search", "").strip()[:120],
+            "p_date_from": date_from.isoformat() if date_from else None,
+            "p_date_to": date_to.isoformat() if date_to else None,
+            "p_origin": request.args.get("origin", "").strip()[:120],
+            "p_destination": request.args.get("destination", "").strip()[:120],
+            "p_driver": request.args.get("driver", "").strip()[:120],
+            "p_load_type": load_type,
+            "p_status": status,
+            "p_sort": sort,
+            "p_sort_dir": sort_dir,
+        }
+    except (ValueError, OverflowError) as exc:
+        return _json_error(str(exc) or "Invalid trip records filter.", 400)
+
+    try:
+        result = _dispatch_rpc("admin_trip_records_page", params)
+    except FleetManagementError as exc:
+        if "only administrators" in str(exc).lower():
+            return _json_error(str(exc), 403)
+        return _dispatch_error_response(exc)
+    if not isinstance(result, dict):
+        logger.error("Trip records RPC returned an invalid response.")
+        return _json_error("Could not load trip records. Please retry.", 503)
+    return jsonify(result)
 
 
 @app.route("/api/dispatch/movements/<uuid:movement_id>/verify", methods=["POST"])
@@ -1957,6 +2508,123 @@ def payroll_report() -> Any:
         return jsonify(get_manager().payroll_report(start_date, end_date))
     except ValueError as exc:
         return _json_error(str(exc), 400)
+
+
+def _settings_amount(value: Any, field: str, *, optional: bool = False) -> str | None:
+    if optional and value in (None, ""):
+        return None
+    try:
+        amount = Decimal(str(value).strip())
+    except (InvalidOperation, AttributeError) as exc:
+        raise ValueError(f"{field} must be a valid amount.") from exc
+    if not amount.is_finite() or amount < 0:
+        raise ValueError(f"{field} must be zero or greater.")
+    if amount.quantize(Decimal("0.01")) != amount:
+        raise ValueError(f"{field} must have no more than two decimal places.")
+    if amount > Decimal("9999999999.99"):
+        raise ValueError(f"{field} is too large.")
+    return format(amount, ".2f")
+
+
+@app.route("/api/settings")
+def settings_data() -> Any:
+    _, error = _revenue_management_request()
+    if error:
+        return error
+    try:
+        manager = get_manager()
+        return jsonify({
+            "driver_pay_rates": manager.list_driver_pay_rates(),
+            "truck_routes": manager.list_truck_routes(),
+            "truck_route_rates": manager.list_truck_route_rates(),
+        })
+    except FleetManagementError as exc:
+        logger.warning("Could not load system settings: %s", exc)
+        return _json_error(str(exc), 503)
+
+
+@app.route("/api/settings/driver-pay-rates", methods=["PUT"])
+def update_driver_pay_rates() -> Any:
+    _, error = _revenue_management_request()
+    if error:
+        return error
+    try:
+        payload = _body()
+        if set(payload) != {"short", "long"}:
+            raise ValueError("Provide both short- and long-route allowances.")
+        allowances = {
+            route_class: _settings_amount(
+                payload[route_class],
+                f"{route_class.title()}-route allowance",
+            )
+            for route_class in ("short", "long")
+        }
+        rates = get_manager().update_driver_pay_rates(allowances)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except FleetManagementError as exc:
+        logger.warning("Could not update driver trip allowances: %s", exc)
+        status = 503 if "not configured" in str(exc).lower() else 400
+        return _json_error(str(exc), status)
+    return jsonify({"driver_pay_rates": rates})
+
+
+@app.route("/api/settings/truck-rates/<int:rate_id>", methods=["PUT"])
+def update_settings_truck_rate(rate_id: int) -> Any:
+    _, error = _revenue_management_request()
+    if error:
+        return error
+    try:
+        payload = _body()
+        if set(payload) != {"hauling_rate", "active"}:
+            raise ValueError("Provide the hauling rate and active status.")
+        if not isinstance(payload["active"], bool):
+            raise ValueError("Active status must be true or false.")
+        hauling_rate = _settings_amount(
+            payload["hauling_rate"],
+            "Hauling rate",
+            optional=True,
+        )
+        rate = get_manager().update_truck_route_rate(
+            rate_id,
+            hauling_rate,
+            payload["active"],
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except FleetManagementError as exc:
+        logger.warning("Could not update hauling rate %s: %s", rate_id, exc)
+        return _json_error(str(exc), 400)
+    return jsonify({"rate": rate})
+
+
+@app.route("/api/settings/routes/<int:route_id>", methods=["PUT"])
+def update_settings_route(route_id: int) -> Any:
+    _, error = _revenue_management_request()
+    if error:
+        return error
+    try:
+        payload = _body()
+        if set(payload) != {"fuel_allocation", "active"}:
+            raise ValueError("Provide the fuel allocation and active status.")
+        if not isinstance(payload["active"], bool):
+            raise ValueError("Active status must be true or false.")
+        fuel_allocation = _settings_amount(
+            payload["fuel_allocation"],
+            "Fuel allocation",
+            optional=True,
+        )
+        route = get_manager().update_truck_route(
+            route_id,
+            fuel_allocation,
+            payload["active"],
+        )
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    except FleetManagementError as exc:
+        logger.warning("Could not update truck route %s: %s", route_id, exc)
+        return _json_error(str(exc), 400)
+    return jsonify({"route": route})
 
 
 def _revenue_management_request() -> tuple[dict[str, Any] | None, Any | None]:

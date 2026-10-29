@@ -32,7 +32,7 @@ TRUCK_ROUTE_RATE_CONFIG = [
     {"origin": "DAV2", "destination": "PLAS", "pallet_capacity": 46, "rate": Decimal("2200.00")},
     {"origin": "GENSAN", "destination": "DAV2", "pallet_capacity": 36, "rate": Decimal("11000.00")},
     {"origin": "GENSAN", "destination": "DAV2", "pallet_capacity": 46, "rate": Decimal("14000.00")},
-    {"origin": "GENSAN", "destination": "DAV1", "pallet_capacity": 36, "rate": Decimal("12284.85")},
+    {"origin": "GENSAN", "destination": "DAV1", "pallet_capacity": 36, "rate": Decimal("12268.90")},
     {"origin": "GENSAN", "destination": "DAV1", "pallet_capacity": 46, "rate": Decimal("15500.00")},
     {"origin": "GENSAN", "destination": "PLAS", "pallet_capacity": 36, "rate": Decimal("11000.00")},
     {"origin": "GENSAN", "destination": "PLAS", "pallet_capacity": 46, "rate": Decimal("14000.00")},

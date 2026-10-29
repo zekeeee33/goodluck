@@ -166,6 +166,115 @@ class CompletedDispatchDeletionTests(unittest.TestCase):
         self.assertIn("documents could not be removed", response.json["warning"])
 
 
+class AdminTripRecordsTests(unittest.TestCase):
+    def test_trip_records_api_requires_administrator_role(self):
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "_user_role", return_value="dispatcher"), patch.object(
+            web_app, "_dispatch_rpc"
+        ) as dispatch_rpc:
+            response = web_app.app.test_client().get("/api/admin/trip-records")
+
+        self.assertEqual(response.status_code, 403)
+        dispatch_rpc.assert_not_called()
+
+    def test_trip_records_api_uses_paginated_authenticated_rpc(self):
+        report = {
+            "records": [{"id": 42, "status": "completed"}],
+            "total": 1,
+            "page": 2,
+            "page_size": 50,
+            "summary": {"total_trips": 1},
+            "filters": {"origins": ["DAV1"]},
+        }
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(
+            web_app, "_dispatch_rpc", return_value=report
+        ) as dispatch_rpc:
+            response = web_app.app.test_client().get(
+                "/api/admin/trip-records?page=2&page_size=50"
+                "&search=ISM-42&date_from=2026-01-01&origin=DAV1"
+                "&load_type=NO_LOAD&sort=trip_id&sort_dir=asc"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), report)
+        dispatch_rpc.assert_called_once_with(
+            "admin_trip_records_page",
+            {
+                "p_page": 2,
+                "p_page_size": 50,
+                "p_search": "ISM-42",
+                "p_date_from": "2026-01-01",
+                "p_date_to": None,
+                "p_origin": "DAV1",
+                "p_destination": "",
+                "p_driver": "",
+                "p_load_type": "NO_LOAD",
+                "p_status": "",
+                "p_sort": "trip_id",
+                "p_sort_dir": "asc",
+            },
+        )
+
+    def test_trip_records_api_rejects_invalid_filters(self):
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "_dispatch_rpc") as dispatch_rpc:
+            response = web_app.app.test_client().get(
+                "/api/admin/trip-records?page_size=500"
+            )
+
+        self.assertEqual(response.status_code, 400)
+        dispatch_rpc.assert_not_called()
+
+    def test_trip_records_migration_has_admin_rls_and_read_only_rpc(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_trip_records_migration.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+
+        self.assertIn("create policy trip_records_admin_read", migration)
+        self.assertIn("using (public.dispatch_is_admin())", migration)
+        self.assertIn("if auth.uid() is null or not public.dispatch_is_admin()", migration)
+        self.assertIn("security definer", migration)
+        self.assertIn("p_page_size not in (10, 25, 50, 100)", migration)
+        self.assertIn("'pending_arrivals'", migration)
+
+    def test_trip_records_interface_is_read_only_and_uses_operations_menu(self):
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        index_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "index.html"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+        with open(index_path, encoding="utf-8") as index_file:
+            index_html = index_file.read()
+
+        self.assertIn('href="#trip-records" data-page="trip-records" data-role="administrator"', index_html)
+        self.assertIn("View and monitor all recorded trips.", index_html)
+        trip_records_markup = app_js.split("function renderTripRecords()", 1)[1].split(
+            "function openTripRecordDetails", 1
+        )[0]
+        self.assertIn("Trip Records", trip_records_markup)
+        self.assertIn('<details class="trip-record-filter-disclosure"', trip_records_markup)
+        self.assertIn('aria-label="Trip record filters"', trip_records_markup)
+        self.assertNotIn('data-action="new-record"', trip_records_markup)
+        self.assertNotIn('data-action="delete"', trip_records_markup)
+        self.assertNotIn('data-action="edit-trip"', trip_records_markup)
+        self.assertIn(
+            'state.tripRecords.filters_open = event.target.open;',
+            app_js,
+        )
+
+
 class LoadCatalogIntegrationTests(unittest.TestCase):
     def test_load_catalog_route_uses_authenticated_dispatch_rpc(self):
         products = [{"id": 1, "section": "CAN", "brand": "COKE", "quantity": 24}]
@@ -208,6 +317,58 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(dispatch_rpc.call_args.args[1]["p_fuel_allocation"], 36.5)
         self.assertEqual(dispatch_rpc.call_args.args[1]["p_actual_fuel_expense"], 2500)
+
+    def test_dispatch_create_accepts_no_load_with_zero_pallets(self):
+        payload = {
+            "origin_location_id": "dav3",
+            "destination_location_id": "dav4",
+            "ism_no": "ISM-101",
+            "truck_id": "12",
+            "driver_id": "34",
+            "trailer_id": "56",
+            "load_type": "NO_LOAD",
+            "pallet_quantity": "0",
+            "departure_at": "2026-10-23T10:00",
+            "load_items": [],
+        }
+        with web_app.app.test_request_context(
+            "/api/dispatch/movements", method="POST", json=payload
+        ), patch.object(web_app, "_dispatch_rpc", return_value="movement-id") as dispatch_rpc:
+            response, status = web_app.dispatch_movements()
+
+        self.assertEqual(status, 201)
+        params = dispatch_rpc.call_args.args[1]
+        self.assertEqual(params["p_load_type"], "NO_LOAD")
+        self.assertEqual(params["p_pallet_quantity"], 0)
+        self.assertEqual(params["p_load_items"], [])
+
+    def test_dispatch_create_rejects_products_for_no_load(self):
+        payload = {
+            "load_type": "NO_LOAD",
+            "pallet_quantity": "0",
+            "load_items": [{"product_id": "7", "pallet_quantity": "1"}],
+        }
+        with web_app.app.test_request_context(
+            "/api/dispatch/movements", method="POST", json=payload
+        ), patch.object(web_app, "_dispatch_rpc") as dispatch_rpc:
+            response, status = web_app.dispatch_movements()
+
+        self.assertEqual(status, 400)
+        self.assertIn("Only FULLS", response.get_json()["error"])
+        dispatch_rpc.assert_not_called()
+
+    def test_no_load_migration_updates_constraints_and_creation_rpcs(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_dispatch_no_load_migration.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+
+        self.assertIn("'FULLS', 'EMPTIES', 'NO_LOAD'", migration)
+        self.assertIn("load_type = 'NO_LOAD' and pallet_quantity = 0", migration)
+        self.assertIn("create or replace function public.create_dispatch_movement(", migration)
+        self.assertIn("create or replace function public.create_dispatch_movement_with_load(", migration)
+        self.assertIn("p_load_type in ('EMPTIES', 'NO_LOAD')", migration)
 
     def test_dispatch_create_rejects_duplicate_catalog_products(self):
         payload = {
@@ -301,6 +462,9 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
         self.assertIn('Number(selected.pallet_quantity) === 1 ? "pallet" : "pallets"', catalog_markup)
         self.assertIn('value="EMPTIES"', departure_form)
         self.assertIn('value="FULLS"', departure_form)
+        self.assertIn('value="NO_LOAD"', departure_form)
+        self.assertIn('type="number" min="${state.dispatch.departureLoadType === "NO_LOAD" ? "0" : "1"}"', departure_form)
+        self.assertIn('record.load_type === "NO_LOAD" ? "No load"', app_js)
 
 
 class PayrollCalculationTests(unittest.TestCase):
@@ -336,6 +500,8 @@ class PayrollCalculationTests(unittest.TestCase):
     def test_truck_route_rates_match_directional_capacity_and_flag_missing_config(self):
         self.assertEqual(str(truck_route_rate("GENSAN", "DAV2", 36)), "11000.00")
         self.assertEqual(str(truck_route_rate("GENSAN", "DAV2", 46)), "14000.00")
+        self.assertEqual(str(truck_route_rate("GENSAN", "DAV1", 36)), "12268.90")
+        self.assertEqual(str(truck_route_rate("DAV1", "GENSAN", 36)), "12284.85")
         self.assertIsNone(truck_route_rate("DAV1", "DAV2", 36))
         self.assertEqual(str(truck_route_rate("PLAS", "DAV1", 46)), "2300.00")
 
@@ -351,8 +517,21 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertIn("on conflict (origin_code, destination_code)", migration)
         self.assertIn("on conflict (origin_code, destination_code, pallet_capacity)", migration)
         self.assertIn("hauling_rate drop not null", migration)
+        self.assertIn("('DAV1', 'GENSAN', 36, 12284.85::numeric)", migration)
+        self.assertIn("('GENSAN', 'DAV1', 36, 12268.90::numeric)", migration)
         self.assertIn("truck_route_rate numeric(12, 2)", migration)
         self.assertIn("trip_rate_review_required boolean not null default true", migration)
+
+        update_path = os.path.join(
+            os.path.dirname(__file__), "..",
+            "supabase_directional_route_rate_update.sql",
+        )
+        with open(update_path, encoding="utf-8") as update_file:
+            correction = update_file.read()
+        self.assertIn("set hauling_rate = 12268.90", correction)
+        self.assertIn("origin_code = 'GENSAN'", correction)
+        self.assertIn("destination_code = 'DAV1'", correction)
+        self.assertIn("pallet_capacity = 36", correction)
 
     def test_truck_trailer_migration_preserves_trucks_and_flags_unknown_trailers(self):
         migration_path = os.path.join(
@@ -452,8 +631,22 @@ class PayrollCalculationTests(unittest.TestCase):
             "get_dispatch_client",
             side_effect=DispatchDatabaseError("PGRST202", "function is missing"),
         ):
-            with self.assertRaisesRegex(FleetManagementError, "function.*is missing"):
+            with self.assertRaisesRegex(
+                FleetManagementError,
+                "function.*is missing.*latest location-dispatch migration",
+            ):
                 web_app._dispatch_rpc("list_dispatch_movements_page")
+
+        with patch.object(
+            web_app,
+            "get_dispatch_client",
+            side_effect=DispatchDatabaseError("PGRST202", "function is missing"),
+        ):
+            with self.assertRaisesRegex(
+                FleetManagementError,
+                "function.*is missing.*supabase_trip_records_migration.sql",
+            ):
+                web_app._dispatch_rpc("admin_trip_records_page")
 
         with patch.object(
             web_app,
@@ -553,7 +746,21 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('app.js?v=location-dispatch-20', index_html)
+        self.assertIn('tailwind.generated.css?v=tailwind-13', index_html)
+        self.assertIn('app.js?v=system-settings-8', index_html)
+        self.assertIn("dispatch-historical-records", app_js)
+        self.assertIn("Scroll horizontally to review all trip fields.", app_js)
+        self.assertIn("function dispatchCompletedMovementListItem(movement)", app_js)
+        self.assertIn('<details class="dispatch-completed-item">', app_js)
+        self.assertIn("pageRows.map(dispatchCompletedMovementListItem)", app_js)
+        self.assertIn('const ism = canViewDispatchIsm(movement, "completed")', app_js)
+        admin_setup = app_js.split("function dispatchAdminSetup() {", 1)[1].split(
+            "function renderDispatchWorkflow()", 1
+        )[0]
+        self.assertIn('<details class="panel dispatch-admin-setup">', admin_setup)
+        self.assertIn('<summary class="dispatch-admin-summary">', admin_setup)
+        self.assertIn('<div class="dispatch-admin-forms">', admin_setup)
+        self.assertNotIn("<details class=\"panel dispatch-admin-setup\" open>", admin_setup)
         self.assertIn("window.setTimeout(() => controller.abort(), 20000)", app_js)
         self.assertIn("The dispatch service did not respond within 20 seconds.", app_js)
         render_workflow = app_js.split("function renderDispatchWorkflow() {", 1)[1].split(
@@ -595,6 +802,14 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertIn("canViewIsm && movement.ism_no", movement_card)
         self.assertIn("movement.arrival_verified_at", movement_card)
         self.assertIn("Record Arrival for Review", movement_card)
+        self.assertIn("movement.departure_document_ready", movement_card)
+        self.assertIn("Upload the missing departure manifest", movement_card)
+        self.assertIn("visible to administrators for follow-up", movement_card)
+        dispatch_workflow = app_js.split(
+            "function renderDispatchWorkflow() {", 1
+        )[1].split("function dispatchStatusLabel", 1)[0]
+        self.assertIn("submitted departure manifest", dispatch_workflow)
+        self.assertIn("receive-arrivals access", dispatch_workflow)
 
     def test_dispatcher_code_migration_assigns_matching_dav_location(self):
         migration_path = os.path.join(
@@ -669,6 +884,11 @@ class PayrollCalculationTests(unittest.TestCase):
             ism_visibility,
         )
         self.assertIn("then movement.arrival_manifest_path", listing)
+        arrivals_filter = listing.split(
+            "p_queue = 'arrivals'", 1
+        )[1].split("p_queue = 'completed'", 1)[0]
+        self.assertIn("public.dispatch_is_admin()", arrivals_filter)
+        self.assertIn("or movement.departure_document_ready", arrivals_filter)
         movement_policy = migration.split(
             "create policy dispatch_movements_read", 1
         )[1].split("drop policy if exists dispatch_audit_read", 1)[0]
@@ -868,6 +1088,23 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertTrue(report["trips"][0]["eligible"])
         self.assertEqual(report["trips"][0]["rate"], "200.00")
         self.assertEqual(report["drivers"][0]["gross_pay"], "200.00")
+
+    def test_payroll_uses_configured_driver_trip_allowances(self):
+        client = FakeSupabaseClient()
+        client.tables["driver_pay_rates"][0]["allowance"] = "275.00"
+        manager = FleetManager(client=client)
+        vehicle = manager.add_vehicle("PAY-RATE", "Toyota", "Hiace", 2022)
+        driver = manager.add_driver("Rate Driver", "PAY-DL-RATE")
+        manager.add_trip(
+            vehicle["id"], driver["id"], "DAV1 to PLAS", 0, 0,
+            ism_no="ISM-PAY-RATE", shipment_date="2026-10-03",
+            origin="DAV1", destination="PLAS",
+        )
+
+        report = manager.payroll_report("2026-10-01", "2026-10-15")
+
+        self.assertEqual(report["trips"][0]["rate"], "275.00")
+        self.assertEqual(report["drivers"][0]["gross_pay"], "275.00")
 
     def test_payroll_matches_unique_imported_last_name_to_registered_driver(self):
         client = FakeSupabaseClient()
@@ -1174,6 +1411,10 @@ class FakeQuery:
         self.filters.append(("in", column, list(values)))
         return self
 
+    def ilike(self, column, value):
+        self.filters.append(("ilike", column, value.strip("%").lower()))
+        return self
+
     def gte(self, column, value):
         self.filters.append(("gte", column, value))
         return self
@@ -1199,6 +1440,10 @@ class FakeQuery:
             if filter_value[0] == "in":
                 _, column, values = filter_value
                 if row.get(column) not in values:
+                    return False
+            elif filter_value[0] == "ilike":
+                _, column, value = filter_value
+                if value not in str(row.get(column) or "").lower():
                     return False
             elif filter_value[0] in {"gte", "lte"}:
                 operator, column, value = filter_value
@@ -1314,7 +1559,12 @@ class FakeQuery:
 
 class FakeSupabaseClient:
     def __init__(self):
-        self.tables = {}
+        self.tables = {
+            "driver_pay_rates": [
+                {"route_class": "short", "allowance": "200.00"},
+                {"route_class": "long", "allowance": "900.00"},
+            ],
+        }
         self.next_ids = {}
         self.query_log = []
 
@@ -1338,6 +1588,360 @@ class FakeStorage:
     def remove(self, paths):
         for path in paths:
             self.files.pop(path, None)
+
+
+class FakeCompletedTripQuery(FakeQuery):
+    def execute(self):
+        if self.action != "delete":
+            response = super().execute()
+            if self.action in {"insert", "update"}:
+                for row in response.data or []:
+                    departure = web_app.datetime.fromisoformat(row["departure_at"])
+                    arrival = web_app.datetime.fromisoformat(row["arrival_at"])
+                    row["duration_minutes"] = int(
+                        (arrival - departure).total_seconds() // 60
+                    )
+                    for stored in self.client.tables[self.table_name]:
+                        if stored.get("id") == row.get("id"):
+                            stored["duration_minutes"] = row["duration_minutes"]
+            return response
+        self.client.query_log.append({
+            "table": self.table_name,
+            "action": self.action,
+            "columns": self.columns,
+            "filters": list(self.filters),
+        })
+        rows = self.client.tables.setdefault(self.table_name, [])
+        deleted = [row for row in rows if self._matches(row)]
+        self.client.tables[self.table_name] = [
+            row for row in rows if not self._matches(row)
+        ]
+        return SimpleNamespace(data=[dict(row) for row in deleted])
+
+
+class FakeCompletedTripClient(FakeSupabaseClient):
+    def __init__(self, access_allowed=True):
+        super().__init__()
+        self.storage = FakeStorage()
+        self.access_allowed = access_allowed
+        self.rpc_calls = []
+
+    def table(self, table_name):
+        return FakeCompletedTripQuery(self, table_name)
+
+    def rpc(self, function_name, _params=None):
+        self.rpc_calls.append(function_name)
+        return SimpleNamespace(
+            execute=lambda: SimpleNamespace(data=self.access_allowed)
+        )
+
+
+class CompletedTripAccessTests(unittest.TestCase):
+    def authenticate(self, client, *, user_id, email, verified=True, dispatcher=False):
+        auth_client = FakeAuthClient()
+        auth_client.user.id = user_id
+        auth_client.user.email = email
+        auth_client.user.email_confirmed_at = "2026-10-01T00:00:00Z" if verified else None
+        if dispatcher:
+            auth_client.user.user_metadata = {"role": "dispatcher"}
+        patcher = patch.object(web_app, "get_auth_client", return_value=auth_client)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        csrf = client.get("/api/auth/csrf").json["csrf_token"]
+        login = client.post(
+            "/api/auth/login",
+            json={"email": "fleet@example.com", "password": "correct-password"},
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(login.status_code, 200)
+        with client.session_transaction() as browser_session:
+            return browser_session["csrf_token"]
+
+    def test_feature_rejects_anonymous_and_other_accounts_even_with_spoofed_identity(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        self.assertEqual(client.get("/api/completed-trips").status_code, 401)
+
+        csrf = self.authenticate(
+            client,
+            user_id="another-user-id",
+            email="another@example.com",
+            dispatcher=True,
+        )
+        with patch.object(web_app, "get_dispatch_client") as dispatch_client:
+            response = client.post(
+                "/api/completed-trips",
+                json={
+                    "email": "sceratoconcepts@gmail.com",
+                    "user_id": "authorized-user-id",
+                    "owner_id": "authorized-user-id",
+                    "title": "Spoofed trip",
+                },
+                headers={"X-CSRF-Token": csrf},
+            )
+        self.assertEqual(response.status_code, 403)
+        dispatch_client.assert_not_called()
+
+    def test_verified_target_user_requires_database_bound_identity(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        database = FakeCompletedTripClient(access_allowed=False)
+        with patch.object(web_app, "get_dispatch_client", return_value=database):
+            denied = client.get("/api/completed-trips")
+        self.assertEqual(denied.status_code, 503)
+        self.assertIn("Re-run", denied.json["error"])
+        self.assertEqual(database.rpc_calls, ["completed_trip_access_allowed"])
+
+    def test_completed_trip_access_check_accepts_scalar_function_response_shapes(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        for result in (
+            True,
+            [True],
+            {"completed_trip_access_allowed": True},
+        ):
+            database = FakeCompletedTripClient(access_allowed=result)
+            with patch.object(web_app, "get_dispatch_client", return_value=database):
+                response = client.get("/api/auth/me")
+            self.assertTrue(response.json["user"]["can_add_completed_trip"])
+
+    def test_only_verified_target_receives_feature_access_flag(self):
+        web_app.app.config["TESTING"] = True
+        target_client = web_app.app.test_client()
+        self.authenticate(
+            target_client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        database = FakeCompletedTripClient(access_allowed=True)
+        with patch.object(web_app, "get_dispatch_client", return_value=database):
+            target_user = target_client.get("/api/auth/me").json["user"]
+        self.assertTrue(target_user["can_add_completed_trip"])
+
+        other_client = web_app.app.test_client()
+        self.authenticate(
+            other_client,
+            user_id="another-user-id",
+            email="another@example.com",
+        )
+        with patch.object(web_app, "get_dispatch_client") as dispatch_client:
+            other_user = other_client.get("/api/auth/me").json["user"]
+        self.assertFalse(other_user["can_add_completed_trip"])
+        dispatch_client.assert_not_called()
+
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        index_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "index.html"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+        with open(index_path, encoding="utf-8") as index_file:
+            index_html = index_file.read()
+        self.assertIn("state.data?.user?.can_add_completed_trip !== true", app_js)
+        self.assertNotIn("Add a Completed Trip", index_html)
+        render_body = app_js.split("function render() {", 1)[1].split(
+            "const dispatchDepartureForm", 1
+        )[0]
+        self.assertLess(
+            render_body.index("state.page = location.hash"),
+            render_body.index('state.page === "completed-trips"'),
+        )
+
+    def test_target_user_can_create_read_edit_and_delete_only_owned_records(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+            dispatcher=True,
+        )
+        database = FakeCompletedTripClient()
+        database.tables["completed_trips"] = [{
+            "id": 91,
+            "owner_id": "different-user-id",
+            "title": "Private record",
+            "starting_location": "A",
+            "destination": "B",
+            "departure_at": "2026-10-01T08:00:00+08:00",
+            "arrival_at": "2026-10-01T09:00:00+08:00",
+            "distance": 1,
+            "distance_unit": "km",
+            "duration_minutes": 60,
+            "transportation_type": "car",
+            "notes": None,
+        }]
+        payload = {
+            "ism_no": "TRIP-001",
+            "shipment_date": "2026-10-28",
+            "origin": "Manila",
+            "destination": "Baguio",
+            "route_number": "9",
+            "truck_plate": "ABC123",
+            "trailer_plate": "TR-1",
+            "pallet_capacity": "46",
+            "trip_rate": "14000.00",
+            "fuel_allocation": "",
+            "actual_fuel": "9817.50",
+            "time_in": "13:30",
+            "time_out": "08:00",
+            "load": "EMPTIES — 46 pallets",
+            "driver": "Sample Driver",
+            "trip_fuel": "Diesel",
+            "owner_id": "different-user-id",
+            "user_id": "different-user-id",
+            "email": "different@example.com",
+        }
+        with patch.object(
+            web_app, "_completed_trip_access_state", return_value=(True, None)
+        ), patch.object(web_app, "get_dispatch_client", return_value=database):
+            created = client.post(
+                "/api/completed-trips",
+                json=payload,
+                headers={"X-CSRF-Token": csrf},
+            )
+            trip_id = created.json["data"]["id"]
+            listing = client.get("/api/completed-trips")
+            details = client.get(f"/api/completed-trips/{trip_id}")
+            updated = client.patch(
+                f"/api/completed-trips/{trip_id}",
+                json={**payload, "ism_no": "TRIP-002"},
+                headers={"X-CSRF-Token": csrf},
+            )
+            other_read = client.get("/api/completed-trips/91")
+            other_edit = client.patch(
+                "/api/completed-trips/91",
+                json=payload,
+                headers={"X-CSRF-Token": csrf},
+            )
+            other_delete = client.delete(
+                "/api/completed-trips/91",
+                headers={"X-CSRF-Token": csrf},
+            )
+            deleted = client.delete(
+                f"/api/completed-trips/{trip_id}",
+                headers={"X-CSRF-Token": csrf},
+            )
+
+        self.assertEqual(created.status_code, 201)
+        self.assertEqual(created.json["data"]["owner_id"], "authorized-user-id")
+        self.assertEqual(created.json["data"]["duration_minutes"], 330)
+        self.assertEqual(created.json["data"]["ism_no"], "TRIP-001")
+        self.assertEqual(created.json["data"]["route_number"], 9)
+        self.assertEqual(created.json["data"]["trip_rate"], 14000)
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual([row["id"] for row in listing.json["data"]], [trip_id])
+        self.assertEqual(details.status_code, 200)
+        self.assertEqual(updated.json["data"]["ism_no"], "TRIP-002")
+        self.assertEqual(other_read.status_code, 404)
+        self.assertEqual(other_edit.status_code, 404)
+        self.assertEqual(other_delete.status_code, 404)
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(
+            [row["id"] for row in database.tables["completed_trips"]],
+            [91],
+        )
+
+    def test_arrival_before_departure_and_unverified_target_are_denied(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+            verified=False,
+        )
+        with patch.object(web_app, "get_dispatch_client") as dispatch_client:
+            response = client.post(
+                "/api/completed-trips",
+                json={
+                    "ism_no": "INVALID",
+                    "shipment_date": "2026-10-29",
+                    "origin": "A",
+                    "destination": "B",
+                    "time_out": "10:00",
+                    "time_in": "09:00",
+                },
+                headers={"X-CSRF-Token": csrf},
+            )
+        self.assertEqual(response.status_code, 403)
+        dispatch_client.assert_not_called()
+
+    def test_arrival_before_departure_is_rejected_server_side(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        with patch.object(
+            web_app, "_completed_trip_access_state", return_value=(True, None)
+        ):
+            response = client.post(
+                "/api/completed-trips",
+                json={
+                    "ism_no": "INVALID",
+                    "shipment_date": "2026-10-29",
+                    "origin": "A",
+                    "destination": "B",
+                    "time_out": "25:00",
+                    "time_in": "09:00",
+                },
+                headers={"X-CSRF-Token": csrf},
+            )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("valid time", response.json["error"])
+
+    def test_logout_removes_private_trip_api_access(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        logout = client.post(
+            "/api/auth/logout",
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(logout.status_code, 200)
+        self.assertEqual(client.get("/api/completed-trips").status_code, 401)
+
+    def test_migration_binds_email_to_uid_and_applies_owner_rls(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_completed_trips_migration.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read().lower()
+        self.assertIn("email_confirmed_at is not null", migration)
+        self.assertIn("user_id = auth.uid()", migration)
+        self.assertIn("owner_id = (select auth.uid())", migration)
+        for field in (
+            "ism_no", "shipment_date", "origin", "route_number", "truck_plate",
+            "trailer_plate", "pallet_capacity", "trip_rate", "fuel_allocation",
+            "actual_fuel", "time_in", "time_out", "load", "driver", "trip_fuel",
+            "manifest_object_path", "fuel_receipt_object_path",
+        ):
+            self.assertIn(f"add column if not exists {field}", migration)
+        self.assertIn(
+            "alter table public.completed_trip_access no force row level security",
+            migration,
+        )
+        self.assertIn("enable row level security", migration)
+        self.assertIn("completed_trip_attachment_select", migration)
 
 
 class FakeAuthClient:
@@ -1546,7 +2150,7 @@ class FleetManagerTests(unittest.TestCase):
             (5, "DAV2", "DAV1", "DAV2 ↔ DAV1", None, "2300.00"),
             (6, "DAV2", "PLAS", "DAV2 ↔ PLAS", "1847.00", "2200.00"),
             (7, "GENSAN", "DAV2", "GENSAN ↔ DAV2", "11000.00", "14000.00"),
-            (8, "GENSAN", "DAV1", "GENSAN ↔ DAV1", "12284.85", "15500.00"),
+            (8, "GENSAN", "DAV1", "GENSAN ↔ DAV1", "12268.90", "15500.00"),
             (9, "GENSAN", "PLAS", "GENSAN ↔ PLAS", "11000.00", "14000.00"),
             (10, "PLAS", "GENSAN", "GENSAN ↔ PLAS", "11000.00", "14000.00"),
             (11, "PLAS", "DAV2", "DAV2 ↔ PLAS", "1847.00", "2200.00"),
@@ -1580,7 +2184,7 @@ class FleetManagerTests(unittest.TestCase):
             ("DAV2", "PLAS", 46): "2200.00",
             ("GENSAN", "DAV2", 36): "11000.00",
             ("GENSAN", "DAV2", 46): "14000.00",
-            ("GENSAN", "DAV1", 36): "12284.85",
+            ("GENSAN", "DAV1", 36): "12268.90",
             ("GENSAN", "DAV1", 46): "15500.00",
             ("GENSAN", "PLAS", 36): "11000.00",
             ("GENSAN", "PLAS", 46): "14000.00",
@@ -2988,6 +3592,186 @@ class FleetManagerTests(unittest.TestCase):
             for cookie in response.headers.getlist("Set-Cookie")
         ))
         response.close()
+
+
+class SystemSettingsApiTests(unittest.TestCase):
+    def test_settings_api_is_admin_only(self):
+        manager = SimpleNamespace(
+            list_driver_pay_rates=Mock(return_value=[]),
+            list_truck_routes=Mock(return_value=[]),
+            list_truck_route_rates=Mock(return_value=[]),
+        )
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "get_manager", return_value=manager):
+            client = web_app.app.test_client()
+            response = client.get("/api/settings")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["driver_pay_rates"], [])
+        self.assertEqual(response.json["truck_routes"], [])
+        self.assertEqual(response.json["truck_route_rates"], [])
+
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "_is_dispatcher", return_value=True):
+            denied = web_app.app.test_client().get("/api/settings")
+
+        self.assertEqual(denied.status_code, 403)
+
+    def test_settings_api_saves_driver_allowances_and_rejects_bad_amounts(self):
+        manager = SimpleNamespace(
+            update_driver_pay_rates=Mock(return_value=[
+                {"route_class": "short", "allowance": "250.00"},
+                {"route_class": "long", "allowance": "1000.00"},
+            ])
+        )
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "get_manager", return_value=manager):
+            client = web_app.app.test_client()
+            with client.session_transaction() as browser_session:
+                browser_session["csrf_token"] = "settings-test-csrf"
+            response = client.put(
+                "/api/settings/driver-pay-rates",
+                json={"short": "250", "long": "1000.00"},
+                headers={"X-CSRF-Token": "settings-test-csrf"},
+            )
+            invalid = client.put(
+                "/api/settings/driver-pay-rates",
+                json={"short": "-1", "long": "1000.00"},
+                headers={"X-CSRF-Token": "settings-test-csrf"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            manager.update_driver_pay_rates.call_args.args[0],
+            {"short": "250.00", "long": "1000.00"},
+        )
+        self.assertEqual(invalid.status_code, 400)
+        self.assertEqual(manager.update_driver_pay_rates.call_count, 1)
+
+    def test_settings_api_saves_route_defaults_and_hauling_rates(self):
+        manager = SimpleNamespace(
+            update_truck_route_rate=Mock(return_value={
+                "id": 17,
+                "hauling_rate": "12500.00",
+                "active": True,
+            }),
+            update_truck_route=Mock(return_value={
+                "id": 8,
+                "fuel_allocation": "42.50",
+                "active": True,
+            }),
+        )
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "get_manager", return_value=manager):
+            client = web_app.app.test_client()
+            with client.session_transaction() as browser_session:
+                browser_session["csrf_token"] = "settings-test-csrf"
+            headers = {"X-CSRF-Token": "settings-test-csrf"}
+            rate_response = client.put(
+                "/api/settings/truck-rates/17",
+                json={"hauling_rate": "12500", "active": True},
+                headers=headers,
+            )
+            route_response = client.put(
+                "/api/settings/routes/8",
+                json={"fuel_allocation": "42.50", "active": True},
+                headers=headers,
+            )
+            invalid_response = client.put(
+                "/api/settings/routes/8",
+                json={"fuel_allocation": "-1", "active": True},
+                headers=headers,
+            )
+
+        self.assertEqual(rate_response.status_code, 200)
+        manager.update_truck_route_rate.assert_called_once_with(
+            17, "12500.00", True
+        )
+        self.assertEqual(route_response.status_code, 200)
+        manager.update_truck_route.assert_called_once_with(
+            8, "42.50", True
+        )
+        self.assertEqual(invalid_response.status_code, 400)
+        self.assertEqual(manager.update_truck_route.call_count, 1)
+
+    def test_dispatcher_cannot_update_settings_through_direct_api(self):
+        manager = SimpleNamespace(update_truck_route=Mock())
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "_is_dispatcher", return_value=True), patch.object(
+            web_app, "get_manager", return_value=manager
+        ):
+            response = web_app.app.test_client().put(
+                "/api/settings/routes/8",
+                json={"fuel_allocation": "42.50", "active": True},
+            )
+
+        self.assertEqual(response.status_code, 403)
+        manager.update_truck_route.assert_not_called()
+
+
+class DriverPaySettingsPersistenceTests(unittest.TestCase):
+    def test_driver_allowances_are_saved_atomically_by_server_rpc(self):
+        data = [
+            {"route_class": "short", "allowance": "250.00"},
+            {"route_class": "long", "allowance": "1000.00"},
+        ]
+        execute = Mock(return_value=SimpleNamespace(data=data))
+        rpc = Mock(return_value=SimpleNamespace(execute=execute))
+        manager = FleetManager(client=SimpleNamespace(rpc=rpc))
+
+        updated = manager.update_driver_pay_rates({
+            "short": "250.00",
+            "long": "1000.00",
+        })
+
+        self.assertEqual(updated, data)
+        rpc.assert_called_once_with(
+            "update_driver_pay_rates",
+            {
+                "p_short_allowance": "250.00",
+                "p_long_allowance": "1000.00",
+            },
+        )
+
+
+class SettingsNavigationTests(unittest.TestCase):
+    def test_settings_navigation_and_legacy_routes_are_admin_guarded(self):
+        project_root = os.path.dirname(os.path.dirname(__file__))
+        with open(
+            os.path.join(project_root, "static", "index.html"),
+            encoding="utf-8",
+        ) as index_file:
+            index_html = index_file.read()
+        with open(
+            os.path.join(project_root, "static", "app.js"),
+            encoding="utf-8",
+        ) as app_js_file:
+            app_js = app_js_file.read()
+
+        self.assertIn(
+            'href="#settings" data-page="settings" data-role="administrator"',
+            index_html,
+        )
+        self.assertIn('if (state.page === "settings" && !isAdministrator)', app_js)
+        self.assertIn('["truck-rates", "Truck route rates"]', app_js)
+        self.assertIn('<th>Route No.</th><th>Origin</th><th>Destination</th>', app_js)
+        self.assertIn('function renderTruckRouteRates()', app_js)
+        self.assertIn('vehicles: "fleet"', app_js)
+        self.assertIn('drivers: "drivers"', app_js)
+        self.assertIn('assignments: "assignments"', app_js)
+        self.assertIn('if (legacySettingsSections[requestedPage])', app_js)
+        self.assertIn('state.page === "settings" && state.settings.section === "dispatch"', app_js)
+        self.assertIn('data-action="dispatch-reload">Retry dispatch configuration', app_js)
 
 
 if __name__ == "__main__":

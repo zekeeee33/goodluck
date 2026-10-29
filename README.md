@@ -33,6 +33,31 @@ by default, and remembers the selected theme in the browser.
 8. In Supabase **Authentication → Users**, invite or create each authorized
    user's email/password account. Public sign-up is not enabled by this app.
 
+## Private completed trips
+
+After creating and verifying the `sceratoconcepts@gmail.com` user in Supabase
+Authentication, run
+[`supabase_completed_trips_migration.sql`](./supabase_completed_trips_migration.sql)
+in the SQL Editor. The migration binds access to that account's immutable
+Supabase user ID, creates the private completed-trip table and private image
+bucket, and applies owner-only row and storage policies. It fails rather than
+reassigning access if the verified account is missing or the database is
+already bound to a different user ID. Reapply the same migration to confirm its
+account binding and refresh its policies.
+
+The feature uses the existing Supabase session and anon key from the server;
+the browser receives no database credentials. Flask verifies the live,
+confirmed email on protected requests and performs data operations with the
+user's access token, while Supabase RLS independently checks the bound user ID
+and record owner. Optional trip photos are limited to JPEG, PNG, and WEBP files
+up to 10 MB in a private bucket. No new environment variables are required.
+Trip entry and the private saved-trip list use the fleet trip record columns:
+ISM No, shipment date, origin, destination, route number, truck/trailer plate,
+pallet capacity, trip rate, fuel allocation, actual fuel, time in/out, load,
+driver, Trip/Fuel, manifest image, and fuel receipt image. Reapplying the
+migration adds these fields and backfills date, route endpoints, times, Trip/Fuel,
+and any existing attachment from earlier private entries.
+
 ## Dispatcher roles and data isolation
 
 Run [`supabase_dispatcher_ownership_migration.sql`](./supabase_dispatcher_ownership_migration.sql)
@@ -51,6 +76,9 @@ For location-based dispatch, run
 after [`supabase_location_dispatch_migration.sql`](./supabase_location_dispatch_migration.sql).
 Reapply the origin-access migration to existing projects to update the paginated
 dispatch listing; it now computes the eligible movements once per page request.
+Reapply it after the latest update so administrators can see arrival-queue
+movements even when a departure manifest is missing; the card flags the missing
+document for follow-up, while dispatcher arrival access remains document-gated.
 
 Run [`supabase_fuel_allocation_migration.sql`](./supabase_fuel_allocation_migration.sql)
 after the base trips/routes schema and dispatcher ownership migration. It adds
@@ -78,6 +106,12 @@ capacity-specific rates, including `NULL` for the two unsupplied 36-pallet
 DAV1/DAV2 rates. Reapplying it updates the master records rather than inserting
 duplicates. It stores an immutable hauling-rate snapshot on each trip and flags
 historical trips for review instead of assigning rates from today's configuration.
+Rates are directional and independently editable: the 36-pallet DAV1 → GENSAN
+rate is ₱12,284.85, while GENSAN → DAV1 is ₱12,268.90; their 46-pallet rates
+remain ₱15,500.00. For databases that already applied the route-rate migration,
+run [`supabase_directional_route_rate_update.sql`](./supabase_directional_route_rate_update.sql)
+once to update this existing rate row. The same values are included in both
+route-rate seed migrations for new installations.
 
 Then run [`supabase_truck_trailer_migration.sql`](./supabase_truck_trailer_migration.sql).
 The existing `vehicles` table remains the truck registry so its IDs and existing
@@ -140,6 +174,21 @@ Net operating revenue is therefore explicitly provisional, and is unavailable
 when route, driver, trailer, capacity, or text-search filters would make its
 cost scope misleading.
 
+## Administrator Trip Records
+
+After applying the dispatcher ownership, fuel allocation, truck/trailer,
+Revenue dashboard, and location-dispatch migrations, run
+[`supabase_trip_records_migration.sql`](./supabase_trip_records_migration.sql)
+in the Supabase SQL Editor. This adds administrator-only trip read access and
+the server-side paginated Trip Records RPC; restart Flask after applying it.
+
+Administrators can open Trip Records from Operations → Trip operations to
+search and review existing trips, dispatch details, supporting documents, and
+audit history. Dispatchers are redirected away from the page, and the Flask
+endpoint and Supabase RPC independently enforce administrator authorization.
+The page is read-only and does not change existing trip-entry, dispatch,
+arrival, or financial workflows.
+
 Create trucks and trailers separately in Fleet Management. Select an eligible
 truck and an active trailer when dispatching a trip; the trailer's configured
 capacity determines the exact directional route rate. Trips cannot be saved
@@ -153,6 +202,21 @@ identifiers. The source does not list pallet capacity, so each imported trailer
 has an unknown capacity and is marked for review; set its verified capacity in
 the Trailers section before it can be assigned to a rate-based trip. The
 duplicate `MUA941` source row is represented by one trailer record.
+
+Run [`supabase_settings_migration.sql`](./supabase_settings_migration.sql)
+after the route, truck/trailer, and payroll migrations. It creates protected
+short- and long-route driver allowance settings, seeded to the current ₱200 and
+₱900 amounts, adds an atomic server-only update function for those allowances,
+and ensures route fuel-allocation defaults are available.
+Administrators can edit truck route rates (including route number, direction,
+capacity, and hauling rate), driver allowances, route fuel defaults, trucks,
+trailers, drivers, vehicle assignments, and dispatch locations/permissions
+from their respective Settings sections. Changes to
+hauling rates affect newly created trips; saved trip-rate snapshots and
+reviewed/finalized payroll line items are preserved. Draft payroll reports use
+the current driver allowance settings. Configured route fuel defaults prefill
+the dispatch departure form when a route is selected. Former fleet, driver, and
+assignment links redirect administrators to the matching Settings section.
 
 Set a dispatcher's role to `dispatcher` in that user's Supabase **User Metadata**
 to enable the compatibility role restriction. Prefer setting `role` in
@@ -328,9 +392,14 @@ movement and shown in the movement queues. Add Trip presents departure entry as
 a seven-step wizard; its searchable, section-filtered product cards support
 multiple catalog items and count each selected product in pallets. The overall
 trailer pallet quantity remains a separate field. `FULLS` movements require at
-least one catalog product, while `EMPTIES` movements do not.
+least one catalog product, while `EMPTIES` and `NO LOAD` movements do not.
+For movements without cargo, select `NO LOAD`; the pallet quantity is recorded
+as zero and catalog products cannot be attached. After applying the load catalog
+migration, run [`supabase_dispatch_no_load_migration.sql`](./supabase_dispatch_no_load_migration.sql)
+to enable this option in Supabase.
 If the migration was run previously, run it again after updating the app so the
-database RPC accepts and stores per-product `pallet_quantity` values.
+database RPC accepts and stores per-product `pallet_quantity` values. Apply the
+no-load migration after it to enable zero-pallet movements.
 In dispatcher departures, fuel allocation is recorded in liters and actual fuel
 expense is recorded in pesos. When the movement is finalized, the allocation is
 saved as fuel-log quantity rather than as a currency allocation.

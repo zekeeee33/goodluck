@@ -10,8 +10,8 @@
     <title>Good Luck Forwarding Systems Inc. Fleet Management System</title>
     <link rel="icon" type="image/png" href="/static/glfs-logo.png" />
     <script src="/static/theme.js"></script>
-    <link rel="stylesheet" href="/static/tailwind.generated.css?v=tailwind-5" />
-    <script src="/static/app.js?v=location-dispatch-20" defer></script>
+    <link rel="stylesheet" href="/static/tailwind.generated.css?v=tailwind-13" />
+    <script src="/static/app.js?v=system-settings-8" defer></script>
   </head>
   <body>
     <div class="app-shell min-h-screen bg-fleet-canvas text-fleet-ink">
@@ -54,8 +54,8 @@
             <div class="nav-mega-panel" id="nav-panel-operations" role="region" aria-labelledby="nav-category-operations" hidden>
               <div class="nav-panel-heading"><p class="eyebrow">OPERATIONS</p><h2>Trip operations</h2><p>Record shipments and review dispatch activity.</p></div>
               <div class="nav-mega-grid">
-                <a class="nav-link nav-item" href="/dispatcher/add-trip" data-page="trips" data-nav-route="add-trip" aria-label="Add trip">
-                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/><circle cx="12" cy="12" r="9"/></svg><span><span class="nav-link-label">Add Trip</span><small>Create a shipment record</small></span>
+                <a class="nav-link nav-item" href="#trip-records" data-page="trip-records" data-role="administrator" aria-label="Trip Records">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M8 5h11v15H5V5h1"/><path d="M8 3h8v4H8zM8 11h8M8 15h8"/></svg><span><span class="nav-link-label">Trip Records</span><small>View and monitor all recorded trips.</small></span>
                 </a>
               </div>
             </div>
@@ -77,22 +77,16 @@
               </div>
             </div>
           </div>
-          <div class="nav-group" role="group" aria-label="Fleet management" data-nav-category>
-            <button class="nav-category-toggle" id="nav-category-fleet" type="button" aria-expanded="false" aria-controls="nav-panel-fleet" title="Fleet management">
-              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7.5" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/></svg>
-              <span class="nav-category-label">Fleet Management</span><span class="nav-category-chevron" aria-hidden="true">›</span>
+          <div class="nav-group" role="group" aria-label="Settings" data-nav-category>
+            <button class="nav-category-toggle" id="nav-category-settings" type="button" aria-expanded="false" aria-controls="nav-panel-settings" title="Settings">
+              <svg class="nav-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.8 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.8-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.8-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.8 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2Z"/></svg>
+              <span class="nav-category-label">Settings</span><span class="nav-category-chevron" aria-hidden="true">›</span>
             </button>
-            <div class="nav-mega-panel" id="nav-panel-fleet" role="region" aria-labelledby="nav-category-fleet" hidden>
-              <div class="nav-panel-heading"><p class="eyebrow">FLEET MANAGEMENT</p><h2>People and vehicles</h2><p>Manage fleet assets, drivers, and assignments.</p></div>
-              <div class="nav-mega-grid">
-                <a class="nav-link nav-item" href="#vehicles" data-page="vehicles" aria-label="Trucks and trailers">
-                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7h11v10H3zM14 10h4l3 3v4h-7z"/><circle cx="7.5" cy="18" r="2"/><circle cx="17.5" cy="18" r="2"/></svg><span><span class="nav-link-label">Trucks &amp; Trailers</span><small>Truck and trailer registry</small></span>
-                </a>
-                <a class="nav-link nav-item" href="#drivers" data-page="drivers" aria-label="Drivers">
-                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="8" r="3.25"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0M8.5 13.5l3.5 2 3.5-2"/></svg><span><span class="nav-link-label">Drivers</span><small>Driver directory and status</small></span>
-                </a>
-                <a class="nav-link nav-item" href="#assignments" data-page="assignments" aria-label="Vehicle assignments">
-                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h15l-3-3M20 17H5l3 3"/></svg><span><span class="nav-link-label">Vehicle Assignments</span><small>Review assigned drivers and vehicles</small></span>
+            <div class="nav-mega-panel" id="nav-panel-settings" role="region" aria-labelledby="nav-category-settings" hidden>
+              <div class="nav-panel-heading"><p class="eyebrow">ADMINISTRATION</p><h2>System settings</h2><p>Manage financial rates, fleet records, and dispatch configuration.</p></div>
+              <div class="nav-mega-grid nav-mega-grid-single">
+                <a class="nav-link nav-item" href="#settings" data-page="settings" data-role="administrator" aria-label="Settings">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="m19.4 15 .1.1 1.4 1.1-1.4 2.4-1.7-.7a8 8 0 0 1-1.8 1l-.3 1.8h-2.8l-.3-1.8a8 8 0 0 1-1.8-1l-1.7.7-1.4-2.4 1.4-1.1a7 7 0 0 1 0-2l-1.4-1.1 1.4-2.4 1.7.7a8 8 0 0 1 1.8-1l.3-1.8h2.8l.3 1.8a8 8 0 0 1 1.8 1l1.7-.7 1.4 2.4-1.4 1.1a7 7 0 0 1 0 2Z"/></svg><span><span class="nav-link-label">Settings</span><small>Rates, fleet records, and dispatch setup</small></span>
                 </a>
               </div>
             </div>
