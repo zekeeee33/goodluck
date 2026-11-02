@@ -1,16 +1,16 @@
 :root {
   --color-primary: #F5C400;
-  --color-sage: #A9AFBB;
-  --color-cream: #F4F5F7;
-  --color-terracotta: #F59E0B;
+  --color-sage: #667085;
+  --color-cream: #FFFFFF;
+  --color-terracotta: #B7791F;
   --color-mauve: #3B82F6;
   --color-charcoal: #17191F;
-  --color-graphite: #252831;
-  --color-surface: #252831;
+  --color-graphite: #F1F3F5;
+  --color-surface: #FFFFFF;
   --color-on-primary: #17191F;
-  --border-subtle: #343945;
-  --border-default: #343945;
-  --border-emphasis: #4A5160;
+  --border-subtle: #EAECF0;
+  --border-default: #D0D5DD;
+  --border-emphasis: #98A2B3;
   --success: #22C55E;
   --warning: #F59E0B;
   --danger: #EF4444;
@@ -24,6 +24,11 @@
 }
 
 :root[data-theme="dark"] {
+  --color-sage: #A9AFBB;
+  --color-cream: #F4F5F7;
+  --color-terracotta: #F59E0B;
+  --color-graphite: #252831;
+  --color-surface: #252831;
   --color-on-primary: #17191F;
   --border-subtle: #343945;
   --border-default: #343945;
