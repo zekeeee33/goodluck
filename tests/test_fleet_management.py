@@ -106,6 +106,15 @@ class TripDeletionTests(unittest.TestCase):
             legacy_rows,
         )
         self.assertIn('rowAction: "trip-details"', legacy_rows)
+        self.assertIn("editTrips: true", legacy_rows)
+        self.assertIn('data-action="edit-trip-record"', app_js)
+        dispatch_markup = app_js.split("function renderDispatchWorkflow()", 1)[1].split(
+            "function tripRecordsQueryKey()", 1
+        )[0]
+        self.assertIn(
+            '${tab === "completed" ? `${legacyRows}${tripDetailsDialogMarkup()}` : ""}',
+            dispatch_markup,
+        )
         self.assertIn('data-action="delete"', app_js)
 
 
@@ -259,6 +268,7 @@ class AdminTripRecordsTests(unittest.TestCase):
             index_html = index_file.read()
 
         self.assertIn('href="#trip-records" data-page="trip-records" data-role="administrator"', index_html)
+        self.assertIn('href="#trip-reports" data-page="trip-reports" data-role="administrator"', index_html)
         self.assertIn("View and monitor all recorded trips.", index_html)
         trip_records_markup = app_js.split("function renderTripRecords()", 1)[1].split(
             "function openTripRecordDetails", 1
@@ -266,6 +276,13 @@ class AdminTripRecordsTests(unittest.TestCase):
         self.assertIn("Trip Records", trip_records_markup)
         self.assertIn('<details class="trip-record-filter-disclosure"', trip_records_markup)
         self.assertIn('aria-label="Trip record filters"', trip_records_markup)
+        self.assertNotIn("trip-duplicate-panel", trip_records_markup)
+        settings_markup = app_js.split("function renderSettings()", 1)[1].split(
+            "async function submitSettingsForm", 1
+        )[0]
+        self.assertIn('["duplicate-trips", "Duplicate trips"]', app_js)
+        self.assertIn('state.settings.section === "duplicate-trips"', settings_markup)
+        self.assertIn("renderDuplicateTripSettings()", settings_markup)
         self.assertNotIn('data-action="new-record"', trip_records_markup)
         self.assertNotIn('data-action="delete"', trip_records_markup)
         self.assertNotIn('data-action="edit-trip"', trip_records_markup)
@@ -275,7 +292,559 @@ class AdminTripRecordsTests(unittest.TestCase):
         )
 
 
+class AdminTripReportsTests(unittest.TestCase):
+    def setUp(self):
+        self.client = web_app.app.test_client()
+        self.config_patch = patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        )
+        self.config_patch.start()
+        self.addCleanup(self.config_patch.stop)
+
+    def test_report_preview_uses_combined_multi_select_filters(self):
+        report = {
+            "records": [{"id": 91, "ism_no": "ISM-91"}],
+            "total": 1,
+            "page": 2,
+            "page_size": 25,
+            "summary": {"total_trips": 1, "total_distance": 20},
+        }
+        with patch.object(web_app, "_dispatch_rpc", return_value=report) as rpc:
+            response = self.client.get(
+                "/api/admin/trip-reports?report_type=driver&page=2&page_size=25"
+                "&date_from=2026-01-01&date_to=2026-01-31"
+                "&driver_id=4&driver_id=5&truck_id=8&trailer_id=11&origin=Manila"
+                "&destination=Cavite&route=3&status=completed"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), report)
+        rpc.assert_called_once_with("admin_trip_report_page", {
+            "p_page": 2,
+            "p_page_size": 25,
+            "p_search": "",
+            "p_date_from": "2026-01-01",
+            "p_date_to": "2026-01-31",
+            "p_driver_ids": [4, 5],
+            "p_truck_ids": [8],
+            "p_trailer_ids": [11],
+            "p_origins": ["Manila"],
+            "p_destinations": ["Cavite"],
+            "p_routes": ["3"],
+            "p_statuses": ["completed"],
+            "p_report_type": "driver",
+        })
+
+    def test_report_options_are_admin_only(self):
+        with patch.object(web_app, "_user_role", return_value="dispatcher"), patch.object(
+            web_app, "_dispatch_rpc"
+        ) as rpc:
+            response = self.client.get("/api/admin/trip-reports/options")
+
+        self.assertEqual(response.status_code, 403)
+        rpc.assert_not_called()
+
+    def test_report_options_endpoint_calls_options_rpc(self):
+        options = {
+            "drivers": [{"id": 2, "name": "Report Driver"}],
+            "trucks": [{"id": 3, "plate_number": "ABC-123"}],
+            "trailers": [{"id": 4, "plate_number": "TRL-4"}],
+            "origins": ["Manila"],
+            "destinations": ["Cavite"],
+            "routes": [{"value": "3", "label": "Route 3"}],
+            "statuses": [{"value": "completed", "label": "Completed"}],
+        }
+        with patch.object(web_app, "_dispatch_rpc", return_value=options) as rpc:
+            response = self.client.get("/api/admin/trip-reports/options")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), options)
+        rpc.assert_called_once_with("admin_trip_report_options")
+
+    def test_duplicate_scan_checks_all_trip_records_and_groups_normalized_ism_numbers(self):
+        records = [
+            {
+                "id": 12,
+                "ism_no": "  ISM-42 ",
+                "shipment_date": "2026-01-02",
+                "origin": "Manila",
+                "destination": "Cavite",
+                "driver_name": "Jane Doe",
+            },
+            {
+                "id": 11,
+                "ism_no": "ism-42",
+                "shipment_date": "2026-01-01",
+                "origin": "Manila",
+                "destination": "Cavite",
+                "driver_name": "Jane Doe",
+            },
+            {"id": 10, "ism_no": "   "},
+            {"id": 9, "ism_no": "ISM-99"},
+        ]
+        with patch.object(
+            web_app, "_trip_report_all_records", return_value=(records, {})
+        ) as load_all:
+            response = self.client.get("/api/admin/trip-duplicates")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json(), {
+            "groups": [{
+                "key": "ism-42",
+                "ism_no": "ISM-42",
+                "trips": [
+                    {
+                        "id": 12,
+                        "ism_no": "  ISM-42 ",
+                        "trip_date": None,
+                        "shipment_date": "2026-01-02",
+                        "origin": "Manila",
+                        "destination": "Cavite",
+                        "driver_name": "Jane Doe",
+                        "truck_plate": None,
+                        "trailer_plate": None,
+                        "load_details": None,
+                        "status": None,
+                    },
+                    {
+                        "id": 11,
+                        "ism_no": "ism-42",
+                        "trip_date": None,
+                        "shipment_date": "2026-01-01",
+                        "origin": "Manila",
+                        "destination": "Cavite",
+                        "driver_name": "Jane Doe",
+                        "truck_plate": None,
+                        "trailer_plate": None,
+                        "load_details": None,
+                        "status": None,
+                    },
+                ],
+            }],
+            "total_groups": 1,
+            "total_trips": 2,
+        })
+        load_all.assert_called_once_with({
+            "p_page": 1,
+            "p_page_size": 100,
+            "p_search": "",
+            "p_date_from": None,
+            "p_date_to": None,
+            "p_driver_ids": [],
+            "p_truck_ids": [],
+            "p_trailer_ids": [],
+            "p_origins": [],
+            "p_destinations": [],
+            "p_routes": [],
+            "p_statuses": [],
+            "p_report_type": "all",
+        })
+
+    def test_duplicate_scan_is_admin_only(self):
+        with patch.object(web_app, "_user_role", return_value="dispatcher"), patch.object(
+            web_app, "_trip_report_all_records"
+        ) as load_all:
+            response = self.client.get("/api/admin/trip-duplicates")
+
+        self.assertEqual(response.status_code, 403)
+        load_all.assert_not_called()
+
+    def test_trip_report_metadata_uses_names_and_averages_only_valid_revenue(self):
+        metadata = web_app._trip_report_metadata(
+            {
+                "p_report_type": "driver",
+                "p_date_from": "2026-01-01",
+                "p_date_to": "2026-01-31",
+                "p_search": "",
+                "p_driver_ids": [2],
+                "p_truck_ids": [],
+                "p_trailer_ids": [],
+                "p_origins": [],
+                "p_destinations": ["Cavite"],
+                "p_routes": [],
+                "p_statuses": [],
+            },
+            [
+                {
+                    "driver_id": 2,
+                    "driver_name": "Jane Doe",
+                    "distance": 12,
+                    "trip_revenue": "300.10",
+                },
+                {
+                    "driver_id": 2,
+                    "driver_name": "Jane Doe",
+                    "distance": None,
+                    "trip_revenue": None,
+                },
+            ],
+        )
+
+        self.assertIn("Grouping: By Driver", metadata["filter_summary"])
+        self.assertIn("Drivers: Jane Doe", metadata["filter_summary"])
+        self.assertIn("Destinations: Cavite", metadata["filter_summary"])
+        self.assertEqual(metadata["total_trips"], 2)
+        self.assertEqual(metadata["total_distance"], Decimal("12"))
+        self.assertEqual(metadata["total_revenue"], Decimal("300.10"))
+        self.assertEqual(
+            metadata["average_revenue_per_trip"], Decimal("300.10")
+        )
+
+    def test_report_api_rejects_bad_dates_and_non_numeric_ids(self):
+        for query in (
+            "?date_from=2026-02-01&date_to=2026-01-01",
+            "?driver_id=invalid",
+            "?report_type=unknown",
+        ):
+            with self.subTest(query=query), patch.object(
+                web_app, "_dispatch_rpc"
+            ) as rpc:
+                response = self.client.get(f"/api/admin/trip-reports{query}")
+                self.assertEqual(response.status_code, 400)
+                rpc.assert_not_called()
+
+    def test_report_api_limits_total_selected_filter_values(self):
+        query = "&".join(
+            [*(f"origin=O{index}" for index in range(51)),
+             *(f"destination=D{index}" for index in range(50))]
+        )
+        with patch.object(web_app, "_dispatch_rpc") as rpc:
+            response = self.client.get(f"/api/admin/trip-reports?{query}")
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("100 values", response.get_json()["error"])
+        rpc.assert_not_called()
+
+    def test_report_exports_retrieve_all_pages_and_match_xlsx_records(self):
+        trips = [
+            {
+                "id": index + 1,
+                "shipment_date": "2026-01-05",
+                "ism_no": f"ISM-{index + 1}",
+                "driver_name": "Report Driver",
+                "truck_plate": "ABC-123",
+                "truck_id": 1,
+                "trailer_id": 2,
+                "trailer_plate": "TRL-123",
+                "origin": "Manila",
+                "destination": "Cavite",
+                "trip_revenue": "1847.00",
+                "route_number": 3,
+                "route_rate": "1847.00",
+                "distance": 50,
+                "status": "completed",
+            }
+            for index in range(100)
+        ]
+        second_page = {
+            "records": [{**trips[0], "id": 101, "ism_no": "ISM-101"}],
+            "total": 101,
+            "summary": {"total_trips": 101, "total_distance": 5050, "distance_trip_count": 101},
+        }
+        with patch.object(
+            web_app,
+            "_dispatch_rpc",
+            side_effect=[
+                {
+                    "records": trips,
+                    "total": 101,
+                    "summary": second_page["summary"],
+                },
+                second_page,
+            ],
+        ) as rpc:
+            response = self.client.get(
+                "/api/admin/trip-reports/excel?report_type=truck&date_from=2026-01-01"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("Trip_Report_2026-01-01.xlsx", response.headers["Content-Disposition"])
+        self.assertEqual(rpc.call_count, 2)
+        workbook = load_workbook(BytesIO(response.data), data_only=True)
+        self.assertEqual(
+            workbook.sheetnames,
+            ["All Trips", "By Driver", "By Origin", "By Destination", "By Truck", "By Trailer"],
+        )
+        sheet = workbook["All Trips"]
+        self.assertEqual(sheet["A11"].value, "Trip ID")
+        self.assertEqual(sheet["A12"].value, 1)
+        self.assertEqual(sheet["A112"].value, 101)
+        self.assertEqual(sheet["B5"].value, 101)
+        self.assertEqual(sheet["B6"].value, 5050)
+        self.assertEqual(sheet["B7"].value, 101 * 1847)
+        self.assertEqual(sheet["B8"].value, 1847)
+        self.assertEqual(sheet.freeze_panes, "A12")
+        self.assertEqual(len(workbook["By Driver"].tables), 1)
+        self.assertEqual(len(workbook["By Truck"].tables), 1)
+        self.assertEqual(len(workbook["By Trailer"].tables), 1)
+        driver_sheet = workbook["By Driver"]
+        self.assertEqual(driver_sheet["A5"].value.split(" · ")[0], "101 matching trips")
+        self.assertEqual(driver_sheet["A7"].value, "REPORT DRIVER (101 trips)")
+        self.assertEqual(driver_sheet["A8"].value, "TRIP ID")
+        self.assertEqual(driver_sheet["B8"].value, "TRIP DATE")
+        self.assertEqual(driver_sheet["M8"].value, "TRIP REVENUE")
+        self.assertEqual(driver_sheet["A9"].value, 1)
+        self.assertEqual(driver_sheet.freeze_panes, "A8")
+
+    def test_report_export_fetches_all_pages_beyond_ten_thousand_rows(self):
+        total = 10_001
+
+        def report_page(function_name, params):
+            self.assertEqual(function_name, "admin_trip_report_page")
+            page_number = params["p_page"]
+            first_id = (page_number - 1) * 100 + 1
+            last_id = min(first_id + 100, total + 1)
+            return {
+                "records": [{"id": trip_id} for trip_id in range(first_id, last_id)],
+                "total": total,
+                "summary": {"total_trips": total},
+            }
+
+        with patch.object(web_app, "_dispatch_rpc", side_effect=report_page) as rpc:
+            records, _ = web_app._trip_report_all_records({
+                "p_report_type": "all",
+            })
+
+        self.assertEqual(len(records), total)
+        self.assertEqual(records[0]["id"], 1)
+        self.assertEqual(records[-1]["id"], total)
+        self.assertEqual(rpc.call_count, 101)
+
+    def test_report_pdf_is_a_real_paginated_pdf(self):
+        records = [
+            {
+                "id": index + 1,
+                "shipment_date": "2026-01-05",
+                "ism_no": f"ISM-{index + 1}",
+                "driver_id": 1 if index < 75 else 2,
+                "driver_name": "Report Driver A" if index < 75 else "Report Driver B",
+                "truck_plate": "ABC-123",
+                "trailer_plate": "TRL-123",
+                "trip_revenue": "1847.00",
+                "origin": "Manila",
+                "destination": "Cavite",
+                "route_number": 3,
+                "route_rate": 1847,
+                "distance": 50,
+            }
+            for index in range(150)
+        ]
+        page = {
+            "records": records[:100],
+            "total": 150,
+            "summary": {"total_trips": 150, "total_distance": 7500, "distance_trip_count": 150},
+        }
+        with patch.object(
+            web_app,
+            "_dispatch_rpc",
+            side_effect=[page, {**page, "records": records[100:]}],
+        ) as rpc:
+            response = self.client.get(
+                "/api/admin/trip-reports/pdf?report_type=truck&date_from=2026-01-01"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertIn("Trip_Report_2026-01-01_By_Truck.pdf", response.headers["Content-Disposition"])
+        self.assertTrue(response.data.startswith(b"%PDF-"))
+        self.assertGreater(response.data.count(b"/Type /Page"), 1)
+        self.assertEqual(rpc.call_count, 2)
+
+    def test_empty_report_does_not_generate_file(self):
+        with patch.object(
+            web_app,
+            "_dispatch_rpc",
+            return_value={"records": [], "total": 0, "summary": {"total_trips": 0}},
+        ):
+            response = self.client.get("/api/admin/trip-reports/pdf")
+
+        self.assertEqual(response.status_code, 422)
+        self.assertIn("No trips match", response.get_json()["error"])
+
+    def test_trip_report_migration_enforces_admin_and_server_side_filters(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_trip_reports_migration.sql"
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+        self.assertIn("security definer", migration)
+        self.assertIn("if auth.uid() is null or not public.dispatch_is_admin()", migration)
+        self.assertIn("p_driver_ids", migration)
+        self.assertIn("p_truck_ids", migration)
+        self.assertIn("p_trailer_ids", migration)
+        self.assertIn("p_origins", migration)
+        self.assertIn("p_destinations", migration)
+        self.assertIn("p_routes", migration)
+        self.assertIn("p_statuses", migration)
+        self.assertIn("'trailers'", migration)
+        self.assertIn("public.revenue_adjustments", migration)
+        self.assertIn("'trip_revenue', record.trip_revenue", migration)
+        self.assertIn("is_revenue_eligible", migration)
+        self.assertIn("'trip_fuel', record.trip_fuel", migration)
+        self.assertIn("grant execute", migration)
+
+    def test_trip_report_controls_include_preview_pdf_and_excel(self):
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+        for action in (
+            "trip-report-apply",
+            "trip-report-generate-pdf",
+            "trip-report-excel",
+            "trip-report-print",
+        ):
+            self.assertIn(f'data-action="{action}"', app_js)
+        self.assertIn("/api/admin/trip-reports/${action}", app_js)
+        self.assertIn("/api/admin/trip-duplicates", app_js)
+        self.assertIn('data-trip-duplicate-keep="${escapeHtml(group.key)}"', app_js)
+        self.assertIn("identity = label.toLocaleLowerCase();", app_js)
+        self.assertIn("Choose the trip to keep before deleting any other match.", app_js)
+        self.assertIn('class="trip-report-dropdown"', app_js)
+        self.assertIn('type="checkbox" data-trip-report-filter="${key}"', app_js)
+        self.assertIn('tripReportFilterSelect("trailer_ids", "Trailers"', app_js)
+        self.assertIn("tripReportGroupedTables(report.records, report.report_type)", app_js)
+        self.assertIn("Export to Excel (.xlsx)", app_js)
+        self.assertIn("Export to PDF (.pdf)", app_js)
+        self.assertIn("Generating Excel…", app_js)
+        self.assertNotIn("<select multiple size=", app_js)
+        report_markup = app_js.split("function renderTripReports()", 1)[1].split(
+            "function openTripRecordDetails", 1
+        )[0]
+        trip_records_markup = app_js.split("function renderTripRecords()", 1)[1].split(
+            "function openTripRecordDetails", 1
+        )[0]
+        self.assertIn('class="trip-report-filter-disclosure"', report_markup)
+        self.assertIn('class="trip-report-filter-summary"', report_markup)
+        self.assertNotIn('class="trip-report-panel"', trip_records_markup)
+        self.assertIn("state.tripReport.filters_open = event.target.open;", app_js)
+        self.assertIn("optionsAttempted", app_js)
+        self.assertIn('error.message === "Not found"', app_js)
+        self.assertIn("Stop the old server process", app_js)
+
+    def test_filtered_excel_report_creates_a_separate_table_for_each_driver(self):
+        from excel_report import build_filtered_trip_excel_report
+
+        report = build_filtered_trip_excel_report(
+            [
+                {
+                    "id": 21,
+                    "driver_id": 2,
+                    "driver_name": "Jane Doe",
+                    "truck_id": 7,
+                    "truck_plate": "TRK-7",
+                    "trailer_id": 20,
+                    "trailer_plate": "TRL-22",
+                    "origin": "Manila",
+                    "destination": "Cavite",
+                    "trip_date": "2026-01-01",
+                    "distance": 10,
+                    "trip_revenue": "100.10",
+                },
+                {
+                    "id": 20,
+                    "driver_id": 1,
+                    "driver_name": "John Doe",
+                    "truck_id": 8,
+                    "truck_plate": "TRK-8",
+                    "trailer_id": 21,
+                    "trailer_plate": "TRL-11",
+                    "origin": "Davao",
+                    "destination": "Manila",
+                    "trip_date": "2026-01-02",
+                    "distance": 20,
+                    "trip_revenue": "200.00",
+                },
+                {
+                    "id": 22,
+                    "driver_id": 1,
+                    "driver_name": "John Doe",
+                    "truck_id": 8,
+                    "truck_plate": "TRK-8",
+                    "trailer_id": 21,
+                    "trailer_plate": "TRL-11",
+                    "origin": "Davao",
+                    "destination": "Manila",
+                    "trip_date": "2026-01-03",
+                    "distance": 30,
+                    "trip_revenue": None,
+                },
+            ],
+            {
+                "title": "Trips by Route",
+                "generated_at": "2026-01-01",
+                "filter_summary": "Routes: 3",
+                "total_trips": 3,
+                "total_distance": 20,
+            },
+        )
+
+        workbook = load_workbook(report, data_only=True)
+        self.assertEqual(
+            workbook.sheetnames,
+            ["All Trips", "By Driver", "By Origin", "By Destination", "By Truck", "By Trailer"],
+        )
+        worksheet = workbook["By Driver"]
+        self.assertEqual(len(worksheet.tables), 2)
+        self.assertEqual(worksheet["A7"].value, "JANE DOE (1 trip)")
+        self.assertEqual(worksheet["A8"].value, "TRIP ID")
+        self.assertEqual(worksheet["A9"].value, 21)
+        self.assertEqual(worksheet["E9"].value, "TRL-22")
+        self.assertEqual(worksheet["A12"].value, "JOHN DOE (2 trips)")
+        self.assertEqual(worksheet["A13"].value, "TRIP ID")
+        self.assertEqual(worksheet["A14"].value, 20)
+        self.assertEqual(worksheet["A15"].value, 22)
+        self.assertEqual(len(workbook["By Origin"].tables), 2)
+        self.assertEqual(len(workbook["By Destination"].tables), 2)
+        self.assertEqual(len(workbook["By Truck"].tables), 2)
+        self.assertEqual(len(workbook["By Trailer"].tables), 2)
+        all_trips = workbook["All Trips"]
+        self.assertEqual(float(all_trips["B7"].value), 300.10)
+        self.assertAlmostEqual(float(all_trips["B8"].value), 150.05)
+
+    def test_driver_report_groups_trips_by_normalized_name_not_driver_id(self):
+        from trip_report_utils import group_trip_records
+
+        groups = group_trip_records(
+            [
+                {"id": 1, "driver_id": 2, "driver_name": "Jane Doe"},
+                {"id": 2, "driver_id": 9, "driver_name": "  JANE   DOE  "},
+                {"id": 3, "driver_id": 4, "driver_name": "John Doe"},
+            ],
+            "driver",
+        )
+
+        self.assertEqual(
+            [(label, [trip["id"] for trip in trips]) for label, trips in groups],
+            [("Jane Doe", [1, 2]), ("John Doe", [3])],
+        )
+
+
 class LoadCatalogIntegrationTests(unittest.TestCase):
+    def test_load_catalog_import_includes_coke_237ml_and_1liter(self):
+        import_path = os.path.join(
+            os.path.dirname(__file__), "..", "supabase_load_catalog_import.sql"
+        )
+        with open(import_path, encoding="utf-8") as import_file:
+            catalog_import = import_file.read()
+
+        self.assertIn("('COCA-COLA 237 ML', 'COKE', '237ml/24', 24)", catalog_import)
+        self.assertIn("('COCA-COLA 1 LITER', 'COKE', '1000ml/12', 12)", catalog_import)
+        self.assertIn(
+            "('COCA-COLA 1 LITER', 'COKE KASALO', '1000ml/12', 12)",
+            catalog_import,
+        )
+        self.assertIn(
+            "('COCA-COLA 1 LITER', 'COKE TALL', '1000ml/12', 12)",
+            catalog_import,
+        )
+
     def test_load_catalog_route_uses_authenticated_dispatch_rpc(self):
         products = [{"id": 1, "section": "CAN", "brand": "COKE", "quantity": 24}]
         with patch.dict(
@@ -533,6 +1102,24 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertIn("destination_code = 'DAV1'", correction)
         self.assertIn("pallet_capacity = 36", correction)
 
+    def test_historical_route_backfill_matches_named_locations_and_known_capacity(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..",
+            "supabase_trip_route_rate_backfill.sql",
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+
+        self.assertIn("'GENSAN DISTRIBUTION CENTER'", migration)
+        self.assertIn("'DAVAO BOTTLING PLANT 1'", migration)
+        self.assertIn("'DAVAO BOTTLING PLANT 2'", migration)
+        self.assertIn("'PLAS ASTORGA'", migration)
+        self.assertIn("(24|36|46)", migration)
+        self.assertIn("count(distinct capacity) = 1", migration)
+        self.assertIn("configured_rate.pallet_capacity", migration)
+        self.assertIn("trip.truck_route_rate is null", migration)
+        self.assertIn("when resolved.rate_id is not null then false", migration)
+
     def test_truck_trailer_migration_preserves_trucks_and_flags_unknown_trailers(self):
         migration_path = os.path.join(
             os.path.dirname(__file__), "..", "supabase_truck_trailer_migration.sql"
@@ -746,8 +1333,8 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('tailwind.generated.css?v=tailwind-13', index_html)
-        self.assertIn('app.js?v=system-settings-8', index_html)
+        self.assertIn('tailwind.generated.css?v=completed-trip-transfer-1', index_html)
+        self.assertIn('app.js?v=completed-trip-transfer-6', index_html)
         self.assertIn("dispatch-historical-records", app_js)
         self.assertIn("Scroll horizontally to review all trip fields.", app_js)
         self.assertIn("function dispatchCompletedMovementListItem(movement)", app_js)
@@ -980,6 +1567,10 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertIn("trip.truck_route_rate", migration)
         self.assertIn("and not coalesce(trip.trip_rate_review_required, true)", migration)
         self.assertIn("and not coalesce(trip.trailer_review_required, true)", migration)
+        self.assertIn("row_number() over", migration)
+        self.assertIn("partition by\n                    nullif(trim(ism_no), '')", migration)
+        self.assertIn("where ism_rank = 1", migration)
+        self.assertIn("order by is_revenue_eligible desc, shipment_date asc nulls last, id asc", migration)
         self.assertIn("public.fuel_logs", migration)
         self.assertIn("coalesce(actual_expense, total_cost)", migration)
         self.assertIn("public.payroll_items", migration)
@@ -1004,6 +1595,10 @@ class PayrollCalculationTests(unittest.TestCase):
             ("GENSAN", "DAV1", "900.00"),
             ("DAV1", "GENSAN", "900.00"),
             ("gensan", "plas", "900.00"),
+            ("GENSAN Distribution Center", "Davao Bottling Plant 1", "900.00"),
+            ("Davao Bottling Plant 2", "GENSAN Distribution Center", "900.00"),
+            ("PLAS Astorga", "Davao Bottling Plant 1", "200.00"),
+            ("Davao Bottling Plant 1", "Davao Bottling Plant 2", "200.00"),
         ]
         for origin, destination, expected in routes:
             with self.subTest(origin=origin, destination=destination):
@@ -1222,6 +1817,42 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertIsNone(report["trips"][0]["issue"])
         self.assertEqual(report["drivers"][0]["gross_pay"], "900.00")
 
+    def test_payroll_normalizes_full_warehouse_names_for_driver_trip_rates(self):
+        client = FakeSupabaseClient()
+        manager = FleetManager(client=client)
+        driver = manager.add_driver("Named Route Driver", "PAY-DL-NAMED-ROUTE")
+        client.tables["trips"] = [
+            {
+                "id": 31,
+                "driver_id": driver["id"],
+                "driver_name": driver["name"],
+                "ism_no": "ISM-NAMED-LONG",
+                "shipment_date": "2026-10-03",
+                "origin": "GENSAN Distribution Center",
+                "destination": "Davao Bottling Plant 1",
+            },
+            {
+                "id": 32,
+                "driver_id": driver["id"],
+                "driver_name": driver["name"],
+                "ism_no": "ISM-NAMED-SHORT",
+                "shipment_date": "2026-10-04",
+                "origin": "PLAS Astorga",
+                "destination": "Davao Bottling Plant 2",
+            },
+        ]
+
+        report = manager.payroll_report("2026-10-01", "2026-10-15")
+
+        rates_by_ism = {trip["ism_no"]: trip["rate"] for trip in report["trips"]}
+        self.assertEqual(rates_by_ism, {
+            "ISM-NAMED-LONG": "900.00",
+            "ISM-NAMED-SHORT": "200.00",
+        })
+        self.assertTrue(all(trip["eligible"] for trip in report["trips"]))
+        self.assertEqual(report["issues"], [])
+        self.assertEqual(report["drivers"][0]["gross_pay"], "1100.00")
+
     def test_review_snapshots_eligible_trip_rates(self):
         client = FakeSupabaseClient()
         manager = FleetManager(client=client)
@@ -1423,6 +2054,10 @@ class FakeQuery:
         self.filters.append(("lte", column, value))
         return self
 
+    def filter(self, column, operator, value):
+        self.filters.append(("filter", column, operator, value))
+        return self
+
     def order(self, column, desc=False):
         self.sort = (column, desc)
         return self
@@ -1454,6 +2089,11 @@ class FakeQuery:
                     return False
                 if operator == "lte" and row_value > value:
                     return False
+            elif filter_value[0] == "filter":
+                _, column, operator, value = filter_value
+                if operator == "not.is" and value == "null":
+                    if row.get(column) is None:
+                        return False
             else:
                 column, value = filter_value
                 if row.get(column) != value:
@@ -1637,6 +2277,304 @@ class FakeCompletedTripClient(FakeSupabaseClient):
 
 
 class CompletedTripAccessTests(unittest.TestCase):
+    def test_completed_trip_migration_tracks_public_transfer_idempotently(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "Sql snippets",
+            "supabase_completed_trips_migration.sql",
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+        self.assertIn(
+            "add column if not exists completed_trip_id bigint",
+            migration,
+        )
+        self.assertIn("trips_completed_trip_id_unique", migration)
+        self.assertIn("reopen_finalized_payroll_for_trip_transfer", migration)
+        self.assertIn("reopen_finalized_payroll_period", migration)
+        self.assertIn("reopened_for_trip_transfer", migration)
+        self.assertIn("delete from public.payroll_items", migration)
+        self.assertIn("delete from public.payroll_summaries", migration)
+
+    def test_payroll_reopen_endpoint_reopens_selected_period(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        rpc_calls = []
+
+        class PayrollReopenManager:
+            class Client:
+                def rpc(self, function_name, params):
+                    rpc_calls.append((function_name, params))
+                    return SimpleNamespace(
+                        execute=lambda: SimpleNamespace(
+                            data={"period": {
+                                "id": 13,
+                                "start_date": "2026-10-01",
+                                "end_date": "2026-10-31",
+                            }}
+                        )
+                    )
+
+            client = Client()
+
+            @staticmethod
+            def _execute(query):
+                return query.execute()
+
+        with patch.object(
+            web_app, "get_manager", return_value=PayrollReopenManager()
+        ):
+            response = client.post(
+                "/api/payroll/reopen",
+                json={"period_id": 13},
+                headers={"X-CSRF-Token": csrf},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json["data"]["period"],
+            {
+                "id": 13,
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-31",
+            },
+        )
+        self.assertEqual(
+            rpc_calls,
+            [(
+                "reopen_finalized_payroll_period",
+                {
+                    "p_period_id": 13,
+                    "p_actor_id": "authorized-user-id",
+                },
+            )],
+        )
+
+    def test_completed_trip_catalog_load_becomes_readable_public_load_details(self):
+        load = "CATALOG:" + json.dumps({
+            "load_type": "FULLS",
+            "pallet_quantity": 12,
+            "items": [
+                {"product_id": 7, "pallet_quantity": 12},
+            ],
+        })
+        self.assertEqual(
+            web_app._completed_trip_load_details(load),
+            "FULLS · 12 pallets · Product #7 × 12 pallets",
+        )
+
+    def test_move_all_completed_trips_creates_public_trip_and_removes_private_source(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        private_database = FakeCompletedTripClient()
+        private_database.tables["completed_trips"] = [{
+            "id": 7,
+            "owner_id": "authorized-user-id",
+            "ism_no": "TRIP-MOVE-7",
+            "shipment_date": "2026-10-28",
+            "origin": "Manila",
+            "destination": "Baguio",
+            "truck_plate": "TRUCK-7",
+            "trailer_plate": "TRAILER-7",
+            "driver": "Driver Seven",
+            "load": "EMPTIES — 12 pallets",
+            "trip_fuel": None,
+            "time_in": "13:00:00",
+            "time_out": "08:00:00",
+            "fuel_allocation": None,
+            "actual_fuel": None,
+            "manifest_object_path": None,
+            "fuel_receipt_object_path": None,
+        }]
+        public_database = FakeSupabaseClient()
+        payroll_rpc_calls = []
+
+        def reopen_payroll(_function_name, params):
+            def execute():
+                payroll_rpc_calls.append(params)
+                return SimpleNamespace(
+                    data={"periods": [{
+                        "id": 13,
+                        "start_date": "2026-10-01",
+                        "end_date": "2026-10-31",
+                    }]}
+                )
+
+            return SimpleNamespace(execute=execute)
+
+        public_database.rpc = reopen_payroll
+
+        class TransferManager:
+            def __init__(self):
+                self.client = public_database
+
+            def list_vehicles(self):
+                return [{"id": 10, "plate_number": "TRUCK-7"}]
+
+            def list_drivers(self):
+                return [{"id": 20, "name": "Driver Seven"}]
+
+            def list_trailers(self):
+                return [{"id": 30, "plate_number": "TRAILER-7"}]
+
+            def add_trip(self, **values):
+                response = (
+                    self.client.table("trips")
+                    .insert({
+                        "completed_trip_id": values["completed_trip_id"],
+                        "ism_no": values["ism_no"],
+                        "vehicle_id": values["vehicle_id"],
+                        "driver_id": values["driver_id"],
+                        "trailer_id": values["trailer_id"],
+                        "load_details": values["load_details"],
+                    })
+                    .select("*")
+                    .execute()
+                )
+                return response.data[0]
+
+        transfer_manager = TransferManager()
+        with patch.object(
+            web_app,
+            "_completed_trip_request_owner",
+            return_value=("authorized-user-id", None),
+        ), patch.object(
+            web_app, "get_dispatch_client", return_value=private_database
+        ), patch.object(
+            web_app, "get_manager", return_value=transfer_manager
+        ):
+            response = client.post(
+                "/api/completed-trips/move-to-trips",
+                headers={"X-CSRF-Token": csrf},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["data"]["moved_count"], 1)
+        self.assertEqual(response.json["data"]["failed_count"], 0)
+        public_trip = public_database.tables["trips"][0]
+        self.assertEqual(public_trip["completed_trip_id"], 7)
+        self.assertEqual(public_trip["ism_no"], "TRIP-MOVE-7")
+        self.assertEqual(public_trip["vehicle_id"], 10)
+        self.assertEqual(public_trip["driver_id"], 20)
+        self.assertEqual(public_trip["trailer_id"], 30)
+        self.assertEqual(public_trip["load_details"], "EMPTIES — 12 pallets")
+        self.assertEqual(
+            response.json["data"]["reopened_payroll_periods"],
+            [{"id": 13, "start_date": "2026-10-01", "end_date": "2026-10-31"}],
+        )
+        self.assertEqual(
+            payroll_rpc_calls,
+            [{
+                "p_trip_id": public_trip["id"],
+                "p_trip_date": "2026-10-28",
+                "p_actor_id": "authorized-user-id",
+            }],
+        )
+        self.assertEqual(private_database.tables["completed_trips"], [])
+
+    def test_move_all_reopens_payroll_for_already_transferred_trips(self):
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        csrf = self.authenticate(
+            client,
+            user_id="authorized-user-id",
+            email="sceratoconcepts@gmail.com",
+        )
+        private_database = FakeCompletedTripClient()
+        public_database = FakeSupabaseClient()
+        public_database.tables["trips"] = [{
+            "id": 41,
+            "shipment_date": "2026-10-28",
+            "completed_trip_id": 7,
+        }]
+        payroll_rpc_calls = []
+
+        def reopen_payroll(_function_name, params):
+            def execute():
+                payroll_rpc_calls.append(params)
+                return SimpleNamespace(
+                    data={"periods": [{
+                        "id": 13,
+                        "start_date": "2026-10-01",
+                        "end_date": "2026-10-31",
+                    }]}
+                )
+
+            return SimpleNamespace(execute=execute)
+
+        public_database.rpc = reopen_payroll
+
+        class TransferManager:
+            def __init__(self):
+                self.client = public_database
+
+            def list_vehicles(self):
+                return []
+
+            def list_drivers(self):
+                return []
+
+            def list_trailers(self):
+                return []
+
+        with patch.object(
+            web_app,
+            "_completed_trip_request_owner",
+            return_value=("authorized-user-id", None),
+        ), patch.object(
+            web_app, "get_dispatch_client", return_value=private_database
+        ), patch.object(
+            web_app, "get_manager", return_value=TransferManager()
+        ):
+            response = client.post(
+                "/api/completed-trips/move-to-trips",
+                headers={"X-CSRF-Token": csrf},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["data"]["moved_count"], 0)
+        self.assertEqual(
+            response.json["data"]["reopened_payroll_periods"],
+            [{"id": 13, "start_date": "2026-10-01", "end_date": "2026-10-31"}],
+        )
+        self.assertEqual(
+            payroll_rpc_calls,
+            [{
+                "p_trip_id": 41,
+                "p_trip_date": "2026-10-28",
+                "p_actor_id": "authorized-user-id",
+            }],
+        )
+
+    def test_completed_trip_load_accepts_catalog_selection_serialization(self):
+        load = "CATALOG:" + json.dumps({
+            "load_type": "FULLS",
+            "pallet_quantity": 60,
+            "items": [
+                {"product_id": product_id, "pallet_quantity": 1}
+                for product_id in range(1, 61)
+            ],
+        })
+        self.assertGreater(len(load), 500)
+        payload = web_app._completed_trip_payload({
+            "ism_no": "TRIP-CATALOG",
+            "shipment_date": "2026-10-28",
+            "origin": "Manila",
+            "destination": "Baguio",
+            "load": load,
+        })
+        self.assertEqual(payload["load"], load)
     def authenticate(self, client, *, user_id, email, verified=True, dispatcher=False):
         auth_client = FakeAuthClient()
         auth_client.user.id = user_id
@@ -2595,6 +3533,35 @@ class FleetManagerTests(unittest.TestCase):
         self.assertEqual(workbook["Maintenance"]["E5"].data_type, "s")
         self.assertEqual(workbook["Trips"]["G5"].value, "Manila")
 
+    def test_web_export_handles_fuel_logs_without_total_cost(self):
+        vehicle = self.manager.add_vehicle("XLS-FUEL-NULL", "Toyota", "Hiace", 2024)
+        fuel_log = self.manager.add_fuel(
+            vehicle["id"], "Diesel", quantity=105, price_per_liter=60
+        )
+        stored_log = next(
+            row for row in self.client.tables["fuel_logs"]
+            if row["id"] == fuel_log["id"]
+        )
+        stored_log["total_cost"] = None
+        stored_log["actual_expense"] = 9738.75
+        web_app.manager = self.manager
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        self.sign_in(client)
+
+        response = client.get("/api/export")
+
+        self.assertEqual(response.status_code, 200)
+        workbook = load_workbook(BytesIO(response.data), data_only=True)
+        fuel_logs = workbook["Fuel Logs"]
+        self.assertIsNone(fuel_logs["G5"].value)
+        actual_expense_column = next(
+            cell.column for cell in fuel_logs[4]
+            if cell.value == "Actual Expense"
+        )
+        self.assertEqual(fuel_logs.cell(row=5, column=actual_expense_column).value, 9738.75)
+        self.assertEqual(self.manager.dashboard()["total_fuel_spend"], 9738.75)
+
     def test_web_trip_history_export_returns_trip_details_as_excel(self):
         vehicle = self.manager.add_vehicle("TRIP-XLS-1", "Toyota", "Hiace", 2024)
         driver = self.manager.add_driver("Trip Export Driver", "TRIP-DL-1")
@@ -2647,6 +3614,53 @@ class FleetManagerTests(unittest.TestCase):
         self.assertEqual(trips.auto_filter.ref, "A4:Y5")
         self.assertEqual(trips["Q5"].value, 1847)
         self.assertIn("₱", trips["Q5"].number_format)
+
+    def test_web_fuel_log_export_returns_print_ready_excel(self):
+        vehicle = self.manager.add_vehicle("FUEL-XLS-1", "Toyota", "Hiace", 2024)
+        driver = self.manager.add_driver("Fuel Export Driver", "FUEL-DL-1")
+        trip = self.manager.add_trip(
+            vehicle["id"], driver["id"], "Manila to Cavite", 100, 150,
+            ism_no="ISM-FUEL-1",
+            shipment_date="2026-10-05",
+            origin="Manila",
+            destination="Cavite",
+        )
+        self.manager.add_fuel(
+            vehicle["id"],
+            "Diesel",
+            quantity=105,
+            price_per_liter=60,
+            logged_on="2026-10-05",
+            trip_id=trip["id"],
+            fuel_allocation=10000,
+            actual_expense=6300,
+            remarks="Fuel export test",
+        )
+        web_app.manager = self.manager
+        web_app.app.config["TESTING"] = True
+        client = web_app.app.test_client()
+        self.sign_in(client)
+
+        response = client.get("/api/export/fuel")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("fuel_logs.xlsx", response.headers["Content-Disposition"])
+        workbook = load_workbook(BytesIO(response.data), data_only=True)
+        self.assertEqual(workbook.sheetnames, ["Fuel Logs"])
+        fuel_logs = workbook["Fuel Logs"]
+        self.assertEqual(fuel_logs["A5"].value.strftime("%Y-%m-%d"), "2026-10-05")
+        self.assertEqual(fuel_logs["B5"].value, "ISM-FUEL-1")
+        self.assertEqual(fuel_logs["C5"].value, "FUEL-XLS-1")
+        self.assertEqual(fuel_logs["E5"].value, 105)
+        self.assertEqual(fuel_logs["I5"].value, 6300)
+        self.assertIn("₱", fuel_logs["I5"].number_format)
+        self.assertEqual(fuel_logs.freeze_panes, "A5")
+        self.assertEqual(fuel_logs.page_setup.orientation, "landscape")
+        self.assertEqual(fuel_logs.print_area, "'Fuel Logs'!$A$1:$O$5")
 
     def test_web_trip_history_export_uses_selected_group_and_search(self):
         vehicle = self.manager.add_vehicle("TRIP-XLS-2", "Toyota", "Hiace", 2024)

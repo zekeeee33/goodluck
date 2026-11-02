@@ -37,7 +37,9 @@ by default, and remembers the selected theme in the browser.
 
 After creating and verifying the `sceratoconcepts@gmail.com` user in Supabase
 Authentication, run
-[`supabase_completed_trips_migration.sql`](./supabase_completed_trips_migration.sql)
+[`supabase_payroll_migration.sql`](./Sql%20snippets/supabase_payroll_migration.sql)
+first if payroll has not already been set up, then run
+[`supabase_completed_trips_migration.sql`](./Sql%20snippets/supabase_completed_trips_migration.sql)
 in the SQL Editor. The migration binds access to that account's immutable
 Supabase user ID, creates the private completed-trip table and private image
 bucket, and applies owner-only row and storage policies. It fails rather than
@@ -57,6 +59,25 @@ pallet capacity, trip rate, fuel allocation, actual fuel, time in/out, load,
 driver, Trip/Fuel, manifest image, and fuel receipt image. Reapplying the
 migration adds these fields and backfills date, route endpoints, times, Trip/Fuel,
 and any existing attachment from earlier private entries.
+The entry form uses active fleet and route dropdowns and the dispatch load
+catalog; selected product and pallet details are stored with the trip's load
+value while older plain-text load entries remain supported.
+Use **Move all to Public Trips** to transfer saved records into the main trips
+table. Trips that transfer successfully, including their manifest and fuel
+receipt when present, are removed from private Completed Trips; records that
+cannot be matched to one fleet record, lack an active configured route or
+matching rate, or already have the same ISM number in Public Trips remain in the
+private list and are reported for review. Re-run
+[`supabase_completed_trips_migration.sql`](./Sql%20snippets/supabase_completed_trips_migration.sql)
+to install the transfer tracking column and prevent duplicate transfers.
+After installing the latest migration, clicking **Move all to Public Trips**
+also checks trips that were already transferred, so matching finalized payroll
+periods can be reopened even when their private Completed Trips entries were
+previously removed. A finalized period can also be reopened directly from its
+Payroll page with **Reopen for regeneration**. This removes saved payroll
+snapshots and generated settlement deductions, preserves advances and other
+overdraft entries, and records the action in payroll audit history. Review and
+finalize the refreshed payroll again.
 
 ## Dispatcher roles and data isolation
 
@@ -125,6 +146,15 @@ trailers. Earlier hauling-rate snapshots that may have used truck capacity are
 preserved in `legacy_trip_rate_review`, cleared from the active trip-rate fields,
 and marked unresolved until reviewed against an actual trailer.
 
+To repair imported historical trips that still have blank route and rate fields,
+run [`supabase_trip_route_rate_backfill.sql`](./supabase_trip_route_rate_backfill.sql)
+after both migrations above. It matches warehouse codes and full warehouse names,
+fills missing route numbers, and uses an existing trailer capacity or one
+unambiguous `24P`, `36P`, or `46P` marker in the load description to look up a
+configured directional rate. Existing trip-rate snapshots are preserved. Trips
+with missing or ambiguous capacity, or without a configured rate, keep their
+rate-review flag and are not assigned a guessed rate or trailer.
+
 ## Tire Monitoring Sheet
 
 After the truck/trailer migration, run
@@ -164,9 +194,14 @@ the dashboard RPC includes the latest report fields and rate calculation.
 Hauling rate revenue sums each trip's verified saved rate snapshot and audited
 adjustments, including trips whose management revenue status is still `pending`;
 cancelled trips and snapshots still requiring rate or trailer review are
-excluded. The separate status remains available for management review and is
-required before adding audited revenue adjustments. The schema has no separate
-trip completion status. Expense totals use recorded fuel costs
+excluded. A nonblank ISM number is counted once across the trip history: when
+duplicates exist, the dashboard prefers a revenue-eligible saved rate snapshot,
+then the earliest shipment date and lowest trip ID. Trips with blank ISM numbers
+remain separate. The canonical row is selected before report filters are applied,
+so a duplicate does not appear as a second trip in the ledger or totals. The
+separate status remains available for management review and is required before
+adding audited revenue adjustments. The schema has no separate trip completion
+status. Expense totals use recorded fuel costs
 (`actual_expense`, falling back to `total_cost`), reviewed/finalized payroll
 items, and maintenance costs. There is no general operating-expense ledger,
 and unreviewed payroll or fuel logs without a recorded cost are not estimated.
@@ -180,13 +215,29 @@ After applying the dispatcher ownership, fuel allocation, truck/trailer,
 Revenue dashboard, and location-dispatch migrations, run
 [`supabase_trip_records_migration.sql`](./supabase_trip_records_migration.sql)
 in the Supabase SQL Editor. This adds administrator-only trip read access and
-the server-side paginated Trip Records RPC; restart Flask after applying it.
+the server-side paginated Trip Records RPC. Then run
+[`supabase_trip_reports_migration.sql`](./supabase_trip_reports_migration.sql)
+to add the administrator-only report filters and paginated report RPCs. Restart
+Flask after applying the migrations and installing dependencies from
+`requirements.txt`.
 
 Administrators can open Trip Records from Operations → Trip operations to
 search and review existing trips, dispatch details, supporting documents, and
-audit history. Dispatchers are redirected away from the page, and the Flask
-endpoint and Supabase RPC independently enforce administrator authorization.
-The page is read-only and does not change existing trip-entry, dispatch,
+audit history. Duplicate-trip cleanup is in Settings → Duplicate trips. It
+scans every trip regardless of the Trip Records filters or page, groups
+repeated non-empty ISM numbers, and requires selecting a trip to keep before
+it enables deletion of another match. Existing dispatch-history and
+financial-record protections still apply to deletion.
+Trip report driver sections are grouped by normalized driver name so records
+with the same name are not split only because they have different driver IDs.
+Dispatchers are redirected away from the page, and the Flask endpoint and
+Supabase RPC independently enforce administrator authorization.
+Trip Reports are available separately from Reports & Analytics. They provide
+server-filtered previews by date, driver, truck, origin, destination, route,
+and trip status, with paginated PDF and formatted Excel downloads. Exports
+include the complete matching result set up to 10,000 trips, shipment-date
+filters, trip totals, measured odometer distance, and signature fields in the
+PDF. Both pages are read-only and do not change existing trip-entry, dispatch,
 arrival, or financial workflows.
 
 Create trucks and trailers separately in Fleet Management. Select an eligible
@@ -304,6 +355,9 @@ credentials were rejected.
 The **Export Excel report** action downloads a pre-formatted `.xlsx` workbook
 with a dashboard summary and separate worksheets for trucks, trailers, drivers,
 assignments, maintenance, fuel logs, and trips.
+The Fuel Logs, Trips, and Payroll tabs also provide top-right Excel export
+actions for focused, print-ready workbooks; fuel exports respect the current
+search text.
 
 ## Payroll setup and workflow
 
@@ -315,7 +369,15 @@ history. Payroll uses the existing trip and driver IDs and does not copy or
 modify trip records. The migration's database function finalizes payroll
 atomically and prevents a trip from being finalized in more than one period.
 If the payroll migration was already run before an update, rerun the updated SQL
-in the Supabase SQL Editor so the finalization function is replaced.
+in the Supabase SQL Editor so the finalization function is replaced. Run the
+latest `Sql snippets/supabase_completed_trips_migration.sql` as well to install
+payroll reopening for completed-trip transfers and the manual Payroll action.
+Moving a completed trip into Public Trips reopens any finalized payroll period
+covering its shipment date, removes that period's saved trip/salary snapshots
+and generated overdraft settlements, and records the change in payroll audit
+history. Review and finalize that payroll period again after the transfer.
+Re-run `Sql snippets/supabase_completed_trips_migration.sql` to install this
+transfer behavior.
 
 Payroll is available to signed-in users, matching the existing app-wide access
 model (the current app does not define separate user roles). Payroll eligibility
@@ -328,9 +390,12 @@ Trips with missing origin/destination, unknown routes, or already finalized
 elsewhere are flagged and excluded. A registered driver and ISM number are
 required to review and save payroll.
 
-Rates are ₱200 for DAV2–PLAS, DAV1–DAV2, and DAV1–PLAS, and ₱900 for
-GENSAN–DAV2, GENSAN–PLAS, and GENSAN–DAV1, in either direction. Payroll review
-snapshots each eligible trip and its rate. Finalized payroll retains those
+Driver trip allowances are ₱200 between any two of DAV1, DAV2, and PLAS, and
+₱900 between GENSAN and any of DAV1, DAV2, or PLAS, in either direction.
+Payroll recognizes both warehouse codes and full names such as "Davao Bottling
+Plant 1" and "GENSAN Distribution Center". These driver allowances are separate
+from the truck hauling-rate snapshot. Payroll review snapshots each eligible
+trip and its driver allowance. Finalized payroll retains those
 values if trips or route rules later change. Cash advances must be recorded before
 review; overdrafts are recorded as explicit opening/new ledger entries and are
 never inferred from negative pay. Overdraft settlement is separately confirmed
@@ -438,9 +503,8 @@ are migrated and regression-checked. To roll back the Tailwind layer, restore
 the previous stylesheet links in `static/index.html` and `static/login.html`;
 the original CSS files remain available.
 
-The website uses the supplied SF Pro Display font files from
-`static/fonts/` through the shared Tailwind stylesheet. Install and build steps
-include those local font assets when deploying.
+The website uses the browser's system UI font stack (Segoe UI on Windows) via
+the shared Tailwind stylesheet, avoiding custom font downloads.
 
 The same Supabase project is used by the command-line interface:
 

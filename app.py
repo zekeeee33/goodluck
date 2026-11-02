@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import hmac
 import csv
+import json
 import logging
 import math
 import os
+import re
 import secrets
 import time
 import uuid
 import warnings
+from collections import defaultdict
 from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from io import BytesIO, StringIO
@@ -22,6 +25,8 @@ from supabase import Client, ClientOptions, create_client
 
 from excel_report import (
     build_excel_report,
+    build_filtered_trip_excel_report,
+    build_fuel_excel_report,
     build_payroll_excel_report,
     build_trip_excel_report,
 )
@@ -32,6 +37,11 @@ from fleet_management import (
     _supabase_project_url,
 )
 from manifest_ocr import extract_manifest_fields, scan_manifest_image
+from trip_pdf_report import build_trip_pdf_report
+from trip_report_utils import (
+    TRIP_REPORT_GROUPINGS,
+    summarize_trip_records,
+)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -141,9 +151,13 @@ def _dispatch_rpc(function_name: str, params: dict[str, Any] | None = None) -> A
             ) from exc
         if code == "PGRST202":
             migration = (
-                "supabase_trip_records_migration.sql"
-                if function_name == "admin_trip_records_page"
-                else "the latest location-dispatch migration"
+                "supabase_trip_reports_migration.sql"
+                if function_name in {"admin_trip_report_page", "admin_trip_report_options"}
+                else (
+                    "supabase_trip_records_migration.sql"
+                    if function_name == "admin_trip_records_page"
+                    else "the latest location-dispatch migration"
+                )
             )
             raise FleetManagementError(
                 f"Dispatch database function '{function_name}' is missing. "
@@ -728,7 +742,7 @@ def _completed_trip_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "destination": ("Destination", 300, True),
         "truck_plate": ("Truck plate", 100, False),
         "trailer_plate": ("Trailer plate", 100, False),
-        "load": ("Load", 500, False),
+        "load": ("Load", 20_000, False),
         "driver": ("Driver", 200, False),
         "trip_fuel": ("Trip/Fuel", 5000, False),
     }
@@ -858,6 +872,91 @@ def _completed_trip_rows_for_response(rows: list[dict[str, Any]]) -> list[dict[s
     return result
 
 
+def _completed_trip_load_details(value: Any) -> str | None:
+    load = str(value or "").strip()
+    if not load.startswith("CATALOG:"):
+        return load or None
+    try:
+        parsed = json.loads(load[len("CATALOG:"):])
+    except (TypeError, ValueError):
+        return load
+    if not isinstance(parsed, dict):
+        return load
+    load_type = str(parsed.get("load_type") or "FULLS")
+    if load_type == "NO_LOAD":
+        return "NO LOAD"
+    pallet_quantity = parsed.get("pallet_quantity")
+    details = f"{load_type} · {pallet_quantity or 0} pallets"
+    items = parsed.get("items")
+    if isinstance(items, list) and items:
+        products = [
+            f"Product #{item.get('product_id')} × {item.get('pallet_quantity')} pallets"
+            for item in items
+            if isinstance(item, dict)
+        ]
+        if products:
+            details += " · " + ", ".join(products)
+    return details
+
+
+def _completed_trip_matching_fleet_id(
+    rows: list[dict[str, Any]], field: str, value: Any, label: str
+) -> int:
+    normalized = str(value or "").strip().casefold()
+    matches = [
+        row for row in rows
+        if str(row.get(field) or "").strip().casefold() == normalized
+    ]
+    if not normalized or len(matches) != 1:
+        raise ValueError(
+            f"Cannot move this trip: its {label} does not match exactly one fleet record."
+        )
+    return int(matches[0]["id"])
+
+
+def _copy_completed_trip_attachment(
+    source_client: Any,
+    manager: FleetManager,
+    owner_id: str,
+    object_path: str | None,
+    mime_type: str | None,
+    target_folder: str,
+    target_record_id: int,
+    set_target_path: Any,
+) -> None:
+    if not object_path:
+        return
+    if not mime_type:
+        raise ValueError("A completed-trip attachment is missing its content type.")
+    extension = {
+        "image/jpeg": ".jpg",
+        "image/png": ".png",
+        "image/webp": ".webp",
+    }.get(mime_type)
+    if not extension:
+        raise ValueError("A completed-trip attachment has an unsupported content type.")
+    image_bytes = source_client.storage.from_(
+        "completed-trip-attachments"
+    ).download(object_path)
+    target_path = (
+        f"{target_folder}/{target_record_id}/{owner_id}/"
+        f"{uuid.uuid4().hex}{extension}"
+    )
+    storage = manager.client.storage.from_(app.config["DOCUMENT_IMAGE_BUCKET"])
+    uploaded = False
+    try:
+        storage.upload(target_path, image_bytes, {"content-type": mime_type})
+        uploaded = True
+        set_target_path(target_path)
+    except Exception:
+        if uploaded:
+            try:
+                storage.remove([target_path])
+            except Exception:
+                logger.exception("Could not remove an unlinked transferred trip image.")
+        raise
+
+
 @app.route("/api/completed-trips", methods=["GET", "POST"])
 def completed_trip_collection() -> Any:
     owner_id, error = _completed_trip_request_owner()
@@ -931,6 +1030,345 @@ def completed_trip_collection() -> Any:
     except Exception:
         logger.exception("Could not process completed trip collection request.")
         return _json_error("Could not access completed trips. Please retry.", 503)
+
+
+@app.route("/api/completed-trips/move-to-trips", methods=["POST"])
+def move_all_completed_trips_to_public_trips() -> Any:
+    owner_id, error = _completed_trip_request_owner()
+    if error:
+        return error
+
+    try:
+        client = get_dispatch_client()
+        manager = get_manager()
+        manager.client.table("trips").select("completed_trip_id").limit(1).execute()
+        completed_rows: list[dict[str, Any]] = []
+        offset = 0
+        page_size = 500
+        while True:
+            response = (
+                client.table("completed_trips")
+                .select("*")
+                .eq("owner_id", owner_id)
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = response.data or []
+            completed_rows.extend(dict(row) for row in page)
+            if len(page) < page_size:
+                break
+            offset += page_size
+
+        vehicles = manager.list_vehicles()
+        drivers = manager.list_drivers()
+        trailers = manager.list_trailers()
+        results: list[dict[str, Any]] = []
+        reopened_periods: dict[str, dict[str, Any]] = {}
+        payroll_reopen_attempted_trip_ids: set[str] = set()
+        for completed in completed_rows:
+            completed_id = completed["id"]
+            try:
+                public_query = (
+                    manager.client.table("trips")
+                    .select("*")
+                    .eq("completed_trip_id", completed_id)
+                    .limit(1)
+                    .execute()
+                )
+                public_trip = (
+                    dict(public_query.data[0]) if public_query.data else None
+                )
+                if public_trip is None:
+                    ism_no = str(completed.get("ism_no") or "").strip()
+                    if ism_no:
+                        duplicate_query = (
+                            manager.client.table("trips")
+                            .select("id")
+                            .eq("ism_no", ism_no)
+                            .limit(1)
+                            .execute()
+                        )
+                        if duplicate_query.data:
+                            raise ValueError(
+                                f"ISM No. {ism_no} already exists in Public Trips "
+                                f"as trip #{duplicate_query.data[0]['id']}."
+                            )
+
+                    vehicle_id = _completed_trip_matching_fleet_id(
+                        vehicles, "plate_number", completed.get("truck_plate"), "truck"
+                    )
+                    driver_id = _completed_trip_matching_fleet_id(
+                        drivers, "name", completed.get("driver"), "driver"
+                    )
+                    trailer_id = _completed_trip_matching_fleet_id(
+                        trailers, "plate_number", completed.get("trailer_plate"), "trailer"
+                    )
+                    is_dispatcher = _is_dispatcher()
+                    try:
+                        public_trip = manager.add_trip(
+                            vehicle_id=vehicle_id,
+                            driver_id=driver_id,
+                            trailer_id=trailer_id,
+                            route=(
+                                f"{completed.get('origin') or ''} to "
+                                f"{completed.get('destination') or ''}"
+                            ),
+                            start_odometer=0,
+                            end_odometer=0,
+                            trip_date=completed.get("shipment_date"),
+                            ism_no=completed.get("ism_no"),
+                            shipment_date=completed.get("shipment_date"),
+                            time_in=completed.get("time_in"),
+                            time_out=completed.get("time_out"),
+                            origin=completed.get("origin"),
+                            destination=completed.get("destination"),
+                            load_details=_completed_trip_load_details(completed.get("load")),
+                            trip_fuel=completed.get("trip_fuel"),
+                            notes=completed.get("trip_fuel"),
+                            created_by=owner_id if is_dispatcher else None,
+                            require_truck_rate=True,
+                            fuel_allocation=completed.get("fuel_allocation"),
+                            actual_fuel_expense=completed.get("actual_fuel"),
+                            fuel_remarks=completed.get("trip_fuel"),
+                            create_fuel_log=bool(completed.get("fuel_receipt_object_path")),
+                            completed_trip_id=int(completed_id),
+                        )
+                    except Exception:
+                        # Recover if the trip insert committed but its response was lost.
+                        recovered = (
+                            manager.client.table("trips")
+                            .select("*")
+                            .eq("completed_trip_id", completed_id)
+                            .limit(1)
+                            .execute()
+                        )
+                        if not recovered.data:
+                            raise
+                        public_trip = dict(recovered.data[0])
+
+                public_trip_id = int(public_trip["id"])
+                access_user_id = _document_user_id()
+                if completed.get("manifest_object_path") and not public_trip.get(
+                    "manifest_object_path"
+                ):
+                    _copy_completed_trip_attachment(
+                        client,
+                        manager,
+                        owner_id,
+                        completed.get("manifest_object_path"),
+                        completed.get("manifest_mime_type"),
+                        "trips",
+                        public_trip_id,
+                        lambda path: manager.set_trip_manifest_path(
+                            public_trip_id,
+                            path,
+                            user_id=access_user_id,
+                            edited_by=str((g.current_user or {}).get("id") or owner_id),
+                            editor_email=(g.current_user or {}).get("email"),
+                        ),
+                    )
+
+                if completed.get("fuel_receipt_object_path"):
+                    fuel_query = (
+                        manager.client.table("fuel_logs")
+                        .select("*")
+                        .eq("trip_id", public_trip_id)
+                        .limit(1)
+                        .execute()
+                    )
+                    fuel_record = dict(fuel_query.data[0]) if fuel_query.data else None
+                    if fuel_record is None:
+                        public_vehicle_id = (
+                            public_trip.get("vehicle_id") or public_trip.get("truck_id")
+                        )
+                        if public_vehicle_id is None:
+                            raise ValueError(
+                                "The public trip has no linked truck for its fuel receipt."
+                            )
+                        fuel_record = manager.add_fuel(
+                            vehicle_id=public_vehicle_id,
+                            fuel_type="diesel",
+                            logged_on=completed.get("shipment_date"),
+                            created_by=owner_id if _is_dispatcher() else None,
+                            trip_id=public_trip_id,
+                            fuel_allocation=completed.get("fuel_allocation"),
+                            actual_expense=completed.get("actual_fuel"),
+                            remarks=completed.get("trip_fuel"),
+                        )
+                    if not fuel_record.get("invoice_object_path"):
+                        _copy_completed_trip_attachment(
+                            client,
+                            manager,
+                            owner_id,
+                            completed.get("fuel_receipt_object_path"),
+                            completed.get("fuel_receipt_mime_type"),
+                            "fuel",
+                            int(fuel_record["id"]),
+                            lambda path: manager.set_fuel_invoice_path(
+                                int(fuel_record["id"]), path, user_id=access_user_id
+                            ),
+                        )
+
+                payroll_reopen_attempted_trip_ids.add(str(public_trip_id))
+                payroll_reopen = manager.client.rpc(
+                    "reopen_finalized_payroll_for_trip_transfer",
+                    {
+                        "p_trip_id": public_trip_id,
+                        "p_trip_date": completed.get("shipment_date"),
+                        "p_actor_id": str(
+                            (g.current_user or {}).get("id") or owner_id
+                        ),
+                    },
+                ).execute()
+                payroll_data = payroll_reopen.data
+                if isinstance(payroll_data, list) and len(payroll_data) == 1:
+                    payroll_data = payroll_data[0]
+                if not isinstance(payroll_data, dict) or not isinstance(
+                    payroll_data.get("periods"), list
+                ):
+                    raise RuntimeError(
+                        "Payroll reopening returned an invalid response. "
+                        "Run the latest completed-trip migration and retry."
+                    )
+                trip_reopened_periods = payroll_data["periods"]
+                for period in trip_reopened_periods:
+                    if not isinstance(period, dict) or period.get("id") is None:
+                        raise RuntimeError(
+                            "Payroll reopening returned an invalid period record."
+                        )
+                    reopened_periods[str(period["id"])] = period
+
+                deleted = (
+                    client.table("completed_trips")
+                    .delete()
+                    .eq("id", completed_id)
+                    .eq("owner_id", owner_id)
+                    .select("id")
+                    .execute()
+                )
+                if not deleted.data:
+                    raise RuntimeError(
+                        "The trip was copied to Public Trips, but its private "
+                        "Completed Trips entry could not be removed. Retry the transfer."
+                    )
+                private_paths = [
+                    completed.get(field)
+                    for field in (
+                        "attachment_object_path",
+                        "manifest_object_path",
+                        "fuel_receipt_object_path",
+                    )
+                    if completed.get(field)
+                ]
+                if private_paths:
+                    try:
+                        client.storage.from_(
+                            "completed-trip-attachments"
+                        ).remove(private_paths)
+                    except Exception:
+                        logger.exception(
+                            "Transferred completed trip %s was removed, but its "
+                            "private image files could not be cleaned up.",
+                            completed_id,
+                        )
+                results.append({
+                    "completed_trip_id": completed_id,
+                    "ism_no": completed.get("ism_no"),
+                    "public_trip_id": public_trip_id,
+                    "reopened_payroll_periods": trip_reopened_periods,
+                    "status": "moved",
+                })
+            except Exception as exc:
+                logger.exception(
+                    "Could not move completed trip %s to Public Trips.",
+                    completed_id,
+                )
+                transfer_error = str(exc) or "The trip could not be moved."
+                lowered_error = transfer_error.lower()
+                if (
+                    "reopen_finalized_payroll_for_trip_transfer" in lowered_error
+                    or (
+                        "payroll_periods" in lowered_error
+                        and "does not exist" in lowered_error
+                    )
+                ):
+                    transfer_error = (
+                        "The payroll transfer migration is not installed. Run "
+                        "supabase_payroll_migration.sql and the latest "
+                        "supabase_completed_trips_migration.sql, then retry."
+                    )
+                results.append({
+                    "completed_trip_id": completed_id,
+                    "ism_no": completed.get("ism_no"),
+                    "status": "failed",
+                    "error": transfer_error,
+                })
+
+        offset = 0
+        while True:
+            response = (
+                manager.client.table("trips")
+                .select("id,shipment_date,completed_trip_id")
+                .filter("completed_trip_id", "not.is", "null")
+                .order("id")
+                .range(offset, offset + page_size - 1)
+                .execute()
+            )
+            page = response.data or []
+            for trip in page:
+                trip_id = str(trip["id"])
+                if trip_id in payroll_reopen_attempted_trip_ids:
+                    continue
+                trip_date = trip.get("shipment_date")
+                if not trip_date:
+                    continue
+                payroll_reopen = manager.client.rpc(
+                    "reopen_finalized_payroll_for_trip_transfer",
+                    {
+                        "p_trip_id": int(trip_id),
+                        "p_trip_date": trip_date,
+                        "p_actor_id": str(
+                            (g.current_user or {}).get("id") or owner_id
+                        ),
+                    },
+                ).execute()
+                payroll_data = payroll_reopen.data
+                if isinstance(payroll_data, list) and len(payroll_data) == 1:
+                    payroll_data = payroll_data[0]
+                if not isinstance(payroll_data, dict) or not isinstance(
+                    payroll_data.get("periods"), list
+                ):
+                    raise RuntimeError(
+                        "Payroll reopening returned an invalid response. "
+                        "Run the latest completed-trip migration and retry."
+                    )
+                for period in payroll_data["periods"]:
+                    if not isinstance(period, dict) or period.get("id") is None:
+                        raise RuntimeError(
+                            "Payroll reopening returned an invalid period record."
+                        )
+                    reopened_periods[str(period["id"])] = period
+            if len(page) < page_size:
+                break
+            offset += page_size
+
+        moved_count = sum(result["status"] == "moved" for result in results)
+        return jsonify({
+            "data": {
+                "moved_count": moved_count,
+                "failed_count": len(results) - moved_count,
+                "reopened_payroll_periods": list(reopened_periods.values()),
+                "results": results,
+            }
+        })
+    except Exception:
+        logger.exception("Could not start the completed-trip transfer.")
+        return _json_error(
+            "Could not move completed trips. Run the latest "
+            "supabase_completed_trips_migration.sql from Sql snippets, then retry.",
+            503,
+        )
 
 
 @app.route("/api/completed-trips/<int:trip_id>", methods=["GET", "PATCH", "DELETE"])
@@ -1288,6 +1726,313 @@ def admin_trip_records() -> Any:
         logger.error("Trip records RPC returned an invalid response.")
         return _json_error("Could not load trip records. Please retry.", 503)
     return jsonify(result)
+
+
+TRIP_REPORT_TYPES = {
+    **TRIP_REPORT_GROUPINGS,
+    "route": "Trips by Route",
+    "date": "Trips by Date",
+    "custom": "Custom Trip Report",
+}
+
+
+def _trip_report_request_params() -> dict[str, Any]:
+    def multi_text(name: str) -> list[str]:
+        values = list(dict.fromkeys(
+            value.strip()[:120]
+            for value in request.args.getlist(name)
+            if value.strip()
+        ))
+        if len(values) > 100:
+            raise ValueError(f"Choose no more than 100 values for {name.replace('_', ' ')}.")
+        return values
+
+    def multi_ids(name: str) -> list[int]:
+        raw_values = multi_text(name)
+        try:
+            ids = [int(value) for value in raw_values]
+        except ValueError as exc:
+            raise ValueError(f"Invalid {name.replace('_', ' ')} selection.") from exc
+        if any(value < 1 for value in ids):
+            raise ValueError(f"Invalid {name.replace('_', ' ')} selection.")
+        return ids
+
+    page_text = request.args.get("page", "1")
+    page_size_text = request.args.get("page_size", "50")
+    try:
+        page = int(page_text)
+        page_size = int(page_size_text)
+    except ValueError as exc:
+        raise ValueError("Choose a valid report page and page size.") from exc
+    if page < 1 or page > 100_000 or page_size not in {10, 25, 50, 100}:
+        raise ValueError("Choose a valid report page and page size.")
+
+    date_from_text = request.args.get("date_from", "").strip()
+    date_to_text = request.args.get("date_to", "").strip()
+    try:
+        date_from = date.fromisoformat(date_from_text) if date_from_text else None
+        date_to = date.fromisoformat(date_to_text) if date_to_text else None
+    except ValueError as exc:
+        raise ValueError("Enter valid report start and end dates.") from exc
+    if date_from and date_to and date_from > date_to:
+        raise ValueError("Start date must be on or before end date.")
+
+    report_type = request.args.get("report_type", "all").strip().lower()
+    if report_type not in TRIP_REPORT_TYPES:
+        raise ValueError("Choose a valid trip report category.")
+
+    params = {
+        "p_page": page,
+        "p_page_size": page_size,
+        "p_search": request.args.get("search", "").strip()[:120],
+        "p_date_from": date_from.isoformat() if date_from else None,
+        "p_date_to": date_to.isoformat() if date_to else None,
+        "p_driver_ids": multi_ids("driver_id"),
+        "p_truck_ids": multi_ids("truck_id"),
+        "p_trailer_ids": multi_ids("trailer_id"),
+        "p_origins": multi_text("origin"),
+        "p_destinations": multi_text("destination"),
+        "p_routes": multi_text("route"),
+        "p_statuses": multi_text("status"),
+        "p_report_type": report_type,
+    }
+    if sum(
+        len(params[key])
+        for key in (
+            "p_driver_ids", "p_truck_ids", "p_trailer_ids", "p_origins", "p_destinations",
+            "p_routes", "p_statuses",
+        )
+    ) > 100:
+        raise ValueError("Choose no more than 100 values across report filters.")
+    return params
+
+
+def _trip_report_all_records(params: dict[str, Any]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    first_page_params = {**params, "p_page": 1, "p_page_size": 100}
+    first_page = _dispatch_rpc("admin_trip_report_page", first_page_params)
+    if not isinstance(first_page, dict):
+        raise FleetManagementError("The trip report query returned an invalid response.")
+    total = int(first_page.get("total") or 0)
+    records = list(first_page.get("records") or [])
+    for page in range(2, (total + 99) // 100 + 1):
+        result = _dispatch_rpc(
+            "admin_trip_report_page",
+            {**first_page_params, "p_page": page},
+        )
+        if not isinstance(result, dict) or not isinstance(result.get("records"), list):
+            raise FleetManagementError("A trip report page could not be loaded.")
+        records.extend(result["records"])
+    if len(records) != total:
+        raise FleetManagementError(
+            "The trip report changed while it was being generated. Please retry."
+        )
+    return records, first_page.get("summary") or {}
+
+
+def _trip_report_metadata(
+    params: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    report_type = params["p_report_type"]
+    summary = summarize_trip_records(records)
+    filters: list[str] = []
+    if params["p_date_from"] or params["p_date_to"]:
+        filters.append(
+            f"Shipment date: {params['p_date_from'] or 'Any'} to "
+            f"{params['p_date_to'] or 'Any'}"
+        )
+    if report_type != "all":
+        filters.append(f"Grouping: {TRIP_REPORT_TYPES[report_type]}")
+    related_labels = {
+        "p_driver_ids": ("driver_id", "driver_name"),
+        "p_truck_ids": ("truck_id", "truck_plate"),
+        "p_trailer_ids": ("trailer_id", "trailer_plate"),
+    }
+    labels = {
+        "p_search": "Search",
+        "p_driver_ids": "Drivers",
+        "p_truck_ids": "Trucks",
+        "p_trailer_ids": "Trailers",
+        "p_origins": "Origins",
+        "p_destinations": "Destinations",
+        "p_routes": "Routes",
+        "p_statuses": "Statuses",
+    }
+    for key, label in labels.items():
+        value = params[key]
+        if value:
+            display_values = [value] if isinstance(value, str) else value
+            if key in related_labels:
+                record_id, record_label = related_labels[key]
+                lookup = {
+                    str(record.get(record_id)): record.get(record_label)
+                    for record in records
+                    if record.get(record_id) is not None
+                    and record.get(record_label)
+                }
+                display_values = [
+                    lookup.get(str(selected), selected) for selected in value
+                ]
+            filters.append(f"{label}: {', '.join(map(str, display_values))}")
+    return {
+        "report_type": report_type,
+        "group_by": (
+            report_type if report_type in TRIP_REPORT_GROUPINGS else "driver"
+        ),
+        "title": TRIP_REPORT_TYPES[report_type],
+        "generated_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
+        "filter_summary": " | ".join(filters) if filters else "All trips",
+        **summary,
+    }
+
+
+def _trip_report_filename(metadata: dict[str, Any], extension: str) -> str:
+    date_from = request.args.get("date_from", "").strip()
+    date_to = request.args.get("date_to", "").strip()
+    period = (
+        f"{date_from}_to_{date_to}" if date_from and date_to
+        else date_from or date_to or datetime.now().astimezone().date().isoformat()
+    )
+    safe_period = re.sub(r"[^A-Za-z0-9_-]+", "-", period).strip("-")
+    grouping = ""
+    if extension == "pdf":
+        grouping = "_" + re.sub(
+            r"[^A-Za-z0-9]+", "_", metadata["title"]
+        ).strip("_")
+    return f"Trip_Report_{safe_period}{grouping}.{extension}"
+
+
+@app.route("/api/admin/trip-reports/options")
+def admin_trip_report_options() -> Any:
+    if _user_role() != "administrator" or _is_dispatcher():
+        return _json_error("Only administrators can generate trip reports.", 403)
+    try:
+        result = _dispatch_rpc("admin_trip_report_options")
+    except FleetManagementError as exc:
+        if "only administrators" in str(exc).lower():
+            return _json_error(str(exc), 403)
+        return _dispatch_error_response(exc)
+    if not isinstance(result, dict):
+        return _json_error("Could not load trip report filters. Please retry.", 503)
+    return jsonify(result)
+
+
+@app.route("/api/admin/trip-reports")
+def admin_trip_report_preview() -> Any:
+    if _user_role() != "administrator" or _is_dispatcher():
+        return _json_error("Only administrators can generate trip reports.", 403)
+    try:
+        params = _trip_report_request_params()
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+    try:
+        result = _dispatch_rpc("admin_trip_report_page", params)
+    except FleetManagementError as exc:
+        if "only administrators" in str(exc).lower():
+            return _json_error(str(exc), 403)
+        return _dispatch_error_response(exc)
+    if not isinstance(result, dict):
+        return _json_error("Could not load the trip report preview. Please retry.", 503)
+    return jsonify(result)
+
+
+@app.route("/api/admin/trip-duplicates")
+def admin_trip_duplicates() -> Any:
+    if _user_role() != "administrator" or _is_dispatcher():
+        return _json_error("Only administrators can scan for duplicate trips.", 403)
+
+    params = {
+        "p_page": 1,
+        "p_page_size": 100,
+        "p_search": "",
+        "p_date_from": None,
+        "p_date_to": None,
+        "p_driver_ids": [],
+        "p_truck_ids": [],
+        "p_trailer_ids": [],
+        "p_origins": [],
+        "p_destinations": [],
+        "p_routes": [],
+        "p_statuses": [],
+        "p_report_type": "all",
+    }
+    try:
+        records, _ = _trip_report_all_records(params)
+    except FleetManagementError as exc:
+        if "only administrators" in str(exc).lower():
+            return _json_error(str(exc), 403)
+        return _dispatch_error_response(exc)
+
+    trips_by_ism: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for record in records:
+        ism_no = str(record.get("ism_no") or "").strip()
+        if ism_no:
+            trips_by_ism[" ".join(ism_no.split()).casefold()].append(record)
+
+    groups = []
+    for group_key, duplicate_trips in sorted(trips_by_ism.items()):
+        if len(duplicate_trips) < 2:
+            continue
+        groups.append({
+            "key": group_key,
+            "ism_no": str(duplicate_trips[0].get("ism_no") or "").strip(),
+            "trips": [
+                {
+                    field: trip.get(field)
+                    for field in (
+                        "id", "ism_no", "trip_date", "shipment_date", "origin",
+                        "destination", "driver_name", "truck_plate",
+                        "trailer_plate", "load_details", "status",
+                    )
+                }
+                for trip in duplicate_trips
+            ],
+        })
+    return jsonify({
+        "groups": groups,
+        "total_groups": len(groups),
+        "total_trips": sum(len(group["trips"]) for group in groups),
+    })
+
+
+def _export_admin_trip_report(file_format: str) -> Any:
+    if _user_role() != "administrator" or _is_dispatcher():
+        return _json_error("Only administrators can generate trip reports.", 403)
+    try:
+        params = _trip_report_request_params()
+        records, _ = _trip_report_all_records(params)
+    except ValueError as exc:
+        return _json_error(str(exc), 413 if "matches" in str(exc) else 400)
+    except FleetManagementError as exc:
+        if "only administrators" in str(exc).lower():
+            return _json_error(str(exc), 403)
+        return _dispatch_error_response(exc)
+    metadata = _trip_report_metadata(params, records)
+    if not records:
+        return _json_error("No trips match the selected report filters.", 422)
+    if file_format == "pdf":
+        return send_file(
+            build_trip_pdf_report(records, metadata),
+            mimetype="application/pdf",
+            as_attachment=True,
+            download_name=_trip_report_filename(metadata, "pdf"),
+        )
+    return send_file(
+        build_filtered_trip_excel_report(records, metadata),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=_trip_report_filename(metadata, "xlsx"),
+    )
+
+
+@app.route("/api/admin/trip-reports/pdf")
+def admin_trip_report_pdf() -> Any:
+    return _export_admin_trip_report("pdf")
+
+
+@app.route("/api/admin/trip-reports/excel")
+def admin_trip_report_excel() -> Any:
+    return _export_admin_trip_report("excel")
 
 
 @app.route("/api/dispatch/movements/<uuid:movement_id>/verify", methods=["POST"])
@@ -2510,6 +3255,38 @@ def payroll_report() -> Any:
         return _json_error(str(exc), 400)
 
 
+@app.route("/api/payroll/reopen", methods=["POST"])
+def payroll_reopen() -> Any:
+    if _is_dispatcher():
+        return _json_error("Only administrators can reopen payroll.", 403)
+    try:
+        payload = _body()
+        period_id = _integer(payload, "period_id")
+        if period_id < 1:
+            raise ValueError("Payroll period ID must be a positive integer.")
+        actor_id = str(g.current_user["id"])
+        manager = get_manager()
+        response = manager._execute(
+            manager.client.rpc(
+                "reopen_finalized_payroll_period",
+                {
+                    "p_period_id": period_id,
+                    "p_actor_id": actor_id,
+                },
+            )
+        )
+        data = response.data
+        if isinstance(data, list) and len(data) == 1:
+            data = data[0]
+        if not isinstance(data, dict) or not isinstance(data.get("period"), dict):
+            raise FleetManagementError(
+                "Payroll reopening returned an invalid response."
+            )
+        return jsonify({"data": data})
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+
 def _settings_amount(value: Any, field: str, *, optional: bool = False) -> str | None:
     if optional and value in (None, ""):
         return None
@@ -3464,6 +4241,44 @@ def export_trip_history() -> Any:
         mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         as_attachment=True,
         download_name="trip_history.xlsx",
+    )
+
+
+@app.route("/api/export/fuel")
+def export_fuel_logs() -> Any:
+    user_id = str((g.current_user or {}).get("id") or session.get("user_id") or "")
+    fuel_logs = get_manager().list_fuel_logs(
+        user_id=user_id if _is_dispatcher() and user_id else None
+    )
+    search_term = request.args.get("search", "").strip().casefold()
+    if search_term:
+        searchable_fields = (
+            "logged_on", "fuel_type", "quantity", "price_per_liter",
+            "total_cost", "fuel_allocation", "actual_expense", "remarks",
+            "trip_ism_no", "trip_origin", "trip_destination", "trip_route_number",
+        )
+        fuel_logs = [
+            record for record in fuel_logs
+            if any(
+                search_term in str(record.get(field) or "").casefold()
+                for field in searchable_fields
+            )
+            or search_term in str(
+                (
+                    record["vehicle"].get("plate_number")
+                    if isinstance(record.get("vehicle"), dict)
+                    else None
+                )
+                or record.get("plate_number")
+                or ""
+            ).casefold()
+        ]
+
+    return send_file(
+        build_fuel_excel_report(fuel_logs),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="fuel_logs.xlsx",
     )
 
 

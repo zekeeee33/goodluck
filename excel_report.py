@@ -10,6 +10,13 @@ from typing import Any
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.table import Table, TableStyleInfo
+from trip_report_utils import (
+    TRIP_REPORT_FIELDS,
+    TRIP_REPORT_GROUPINGS,
+    group_trip_records,
+    summarize_trip_records,
+)
 
 EXCEL_REPORT_SHEETS = (
     ("vehicles", "Vehicles", (
@@ -55,9 +62,25 @@ EXCEL_TRIP_FIELDS = (
     "start_odometer", "end_odometer", "trip_date", "notes",
 )
 
+DRIVER_REPORT_FIELDS = (
+    ("id", "TRIP ID"),
+    ("trip_date", "TRIP DATE"),
+    ("driver_name", "DRIVER"),
+    ("truck_plate", "TRUCK"),
+    ("trailer_plate", "TRAILER"),
+    ("origin", "ORIGIN"),
+    ("destination", "DESTINATION"),
+    ("distance", "DISTANCE"),
+    ("shipment_date", "SHIPMENT DATE"),
+    ("ism_no", "ISM"),
+    ("time_in", "TIME IN"),
+    ("time_out", "TIME OUT"),
+    ("trip_revenue", "TRIP REVENUE"),
+)
+
 EXCEL_CURRENCY_FIELDS = {
     "cost", "price_per_liter", "total_cost", "truck_route_rate",
-    "fuel_allocation", "actual_expense",
+    "fuel_allocation", "actual_expense", "route_rate", "trip_revenue",
 }
 EXCEL_DATE_FIELDS = {
     "advance_date", "assigned_date", "created_at", "effective_date",
@@ -323,6 +346,330 @@ def build_trip_excel_report(
         worksheet = workbook.active
         worksheet.title = "Trip History"
         worksheet.append(["No trips match the selected view"])
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
+def build_filtered_trip_excel_report(
+    trips: list[dict[str, Any]],
+    metadata: dict[str, Any],
+) -> BytesIO:
+    headers = [field for field, _ in TRIP_REPORT_FIELDS]
+    overall = summarize_trip_records(trips)
+    workbook = Workbook()
+    workbook.properties.title = str(metadata.get("title") or "Trip Report")
+    workbook.properties.subject = "Filtered trip operations and gross revenue report"
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    title_fill = PatternFill("solid", fgColor="17365D")
+    group_fill = PatternFill("solid", fgColor="D9EAF7")
+    summary_fill = PatternFill("solid", fgColor="EAF1F8")
+    currency_format = '"₱"#,##0.00;[Red]-"₱"#,##0.00'
+    number_format = "#,##0.0;[Red]-#,##0.0"
+    table_style = TableStyleInfo(
+        name="TableStyleMedium2",
+        showFirstColumn=False,
+        showLastColumn=False,
+        showRowStripes=True,
+        showColumnStripes=False,
+    )
+
+    def write_trip_row(
+        worksheet: Any,
+        row_number: int,
+        trip: dict[str, Any],
+        report_fields: tuple[tuple[str, str], ...],
+    ) -> None:
+        for column, (field, _) in enumerate(report_fields, start=1):
+            value = trip.get(field)
+            cell = worksheet.cell(
+                row=row_number, column=column,
+                value=_excel_cell_value(field, value),
+            )
+            if isinstance(cell.value, str):
+                cell.data_type = "s"
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if field == "trip_revenue":
+                cell.number_format = currency_format
+            elif field in {"start_odometer", "end_odometer", "distance"}:
+                cell.number_format = number_format
+            elif field in EXCEL_DATE_FIELDS and isinstance(cell.value, date):
+                cell.number_format = "yyyy-mm-dd"
+            elif field in {"time_in", "time_out"} and isinstance(cell.value, time):
+                cell.number_format = "hh:mm"
+
+    for sheet_index, (group_by, sheet_title) in enumerate(TRIP_REPORT_GROUPINGS.items()):
+        report_fields = (
+            DRIVER_REPORT_FIELDS if group_by == "driver" else TRIP_REPORT_FIELDS
+        )
+        headers = [field for field, _ in report_fields]
+        worksheet = workbook.active if sheet_index == 0 else workbook.create_sheet()
+        worksheet.title = sheet_title
+        worksheet.sheet_view.showGridLines = False
+        worksheet.freeze_panes = "A8" if group_by == "driver" else "A12"
+        worksheet.page_setup.orientation = "landscape"
+        worksheet.page_setup.fitToWidth = 1
+        worksheet.page_setup.fitToHeight = 0
+        worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+        worksheet.print_title_rows = "1:3" if group_by == "driver" else "1:8"
+        worksheet.merge_cells(
+            start_row=1, start_column=1, end_row=1, end_column=len(headers)
+        )
+        title = worksheet.cell(row=1, column=1, value=sheet_title)
+        title.font = Font(name="Aptos Display", size=16, bold=True, color="FFFFFF")
+        title.fill = title_fill
+        title.alignment = Alignment(vertical="center")
+        worksheet.row_dimensions[1].height = 30
+        worksheet.cell(row=2, column=1, value=metadata.get("generated_at", ""))
+        worksheet.cell(row=3, column=1, value=metadata.get("filter_summary", "All trips"))
+        worksheet.cell(row=2, column=1).data_type = "s"
+        worksheet.cell(row=3, column=1).data_type = "s"
+        summary_values = (
+            ("Total number of trips", overall["total_trips"]),
+            ("Total distance traveled (km)", overall["total_distance"]),
+            ("Total gross trip revenue", overall["total_revenue"]),
+            ("Average gross revenue per trip", overall["average_revenue_per_trip"]),
+        )
+        if group_by == "driver":
+            worksheet.merge_cells(
+                start_row=5, start_column=1, end_row=5, end_column=len(headers)
+            )
+            summary_cell = worksheet.cell(
+                row=5,
+                column=1,
+                value=(
+                    f"{overall['total_trips']:,} matching trips · "
+                    f"{overall['total_distance']:,.1f} km measured · "
+                    f"Gross trip revenue: ₱{overall['total_revenue']:,.2f} · "
+                    f"Average per revenue trip: "
+                    f"{'₱{:,.2f}'.format(overall['average_revenue_per_trip']) if overall['average_revenue_per_trip'] is not None else '—'}"
+                ),
+            )
+            summary_cell.data_type = "s"
+            summary_cell.font = Font(bold=True, color="17365D")
+            summary_cell.fill = summary_fill
+            summary_cell.alignment = Alignment(vertical="center")
+            worksheet.row_dimensions[5].height = 23
+        else:
+            for row_number, (label, value) in enumerate(summary_values, start=5):
+                worksheet.cell(row=row_number, column=1, value=label)
+                value_cell = worksheet.cell(row=row_number, column=2, value=value)
+                worksheet.cell(row=row_number, column=1).font = Font(bold=True)
+                worksheet.cell(row=row_number, column=1).fill = summary_fill
+                value_cell.fill = summary_fill
+                if "revenue" in label.lower():
+                    value_cell.number_format = currency_format
+                elif "distance" in label.lower():
+                    value_cell.number_format = number_format
+        for row_number in (2, 3):
+            worksheet.cell(row=row_number, column=1).font = Font(
+                italic=True, color="64748B"
+            )
+
+        row_number = 7 if group_by == "driver" else 10
+        table_number = 0
+        groups = group_trip_records(trips, group_by)
+        for group_label, group_trips in groups:
+            group_summary = summarize_trip_records(group_trips)
+            worksheet.merge_cells(
+                start_row=row_number, start_column=1,
+                end_row=row_number, end_column=len(headers),
+            )
+            group_title_text = (
+                f"{group_label.upper()} ({group_summary['total_trips']} "
+                f"{'trip' if group_summary['total_trips'] == 1 else 'trips'})"
+                if group_by == "driver"
+                else (
+                    f"{group_label} | Trips: {group_summary['total_trips']} | "
+                    f"Distance: {group_summary['total_distance']:,.1f} km | "
+                    f"Gross revenue: ₱{group_summary['total_revenue']:,.2f}"
+                )
+            )
+            group_title = worksheet.cell(
+                row=row_number, column=1,
+                value=group_title_text,
+            )
+            group_title.data_type = "s"
+            group_title.font = Font(bold=True, color="17365D")
+            group_title.fill = group_fill
+            row_number += 1
+            table_header_row = row_number
+            for column, (_, label) in enumerate(report_fields, start=1):
+                cell = worksheet.cell(row=row_number, column=column, value=label)
+                cell.font = Font(bold=True, color="FFFFFF")
+                cell.fill = header_fill
+                cell.alignment = Alignment(
+                    horizontal="center", vertical="center", wrap_text=True
+                )
+            worksheet.row_dimensions[row_number].height = 30
+            row_number += 1
+            for trip in group_trips:
+                write_trip_row(worksheet, row_number, trip, report_fields)
+                row_number += 1
+            if group_trips:
+                table_number += 1
+                table = Table(
+                    displayName=f"TripData{sheet_index + 1}_{table_number}",
+                    ref=(
+                        f"A{table_header_row}:"
+                        f"{get_column_letter(len(headers))}{row_number - 1}"
+                    ),
+                )
+                table.tableStyleInfo = table_style
+                worksheet.add_table(table)
+            if group_by == "driver":
+                worksheet.merge_cells(
+                    start_row=row_number, start_column=1,
+                    end_row=row_number, end_column=len(headers),
+                )
+                group_totals = worksheet.cell(
+                    row=row_number,
+                    column=1,
+                    value=(
+                        f"Group totals: {group_summary['total_distance']:,.1f} km "
+                        f"· Gross trip revenue: ₱{group_summary['total_revenue']:,.2f}"
+                    ),
+                )
+                group_totals.data_type = "s"
+                group_totals.font = Font(italic=True, color="475569")
+                group_totals.fill = summary_fill
+                row_number += 1
+            row_number += 1
+
+        last_row = max(9, row_number - 1)
+        last_column = get_column_letter(len(headers))
+        worksheet.print_area = f"'{sheet_title}'!$A$1:${last_column}${last_row}"
+        for column, (field, label) in enumerate(report_fields, start=1):
+            values = [label]
+            values.extend(
+                str(trip.get(field) or "")
+                for trip in trips
+                if trip.get(field) is not None
+            )
+            worksheet.column_dimensions[get_column_letter(column)].width = min(
+                max(max(map(len, values), default=0) + 2, 12), 40
+            )
+
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
+def build_fuel_excel_report(fuel_logs: list[dict[str, Any]]) -> BytesIO:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Fuel Logs"
+    workbook.properties.title = "Fuel Logs Report"
+    workbook.properties.subject = "Formatted fuel log report"
+    worksheet.sheet_view.showGridLines = False
+
+    fields = (
+        ("logged_on", "Date"),
+        ("ism_no", "ISM Number"),
+        ("plate_number", "Vehicle Plate"),
+        ("fuel_type", "Fuel Type"),
+        ("quantity", "Quantity (L)"),
+        ("price_per_liter", "Price per Liter"),
+        ("total_cost", "Total Cost"),
+        ("fuel_allocation", "Fuel Allocation"),
+        ("actual_expense", "Actual Expense"),
+        ("trip_origin", "Origin"),
+        ("trip_destination", "Destination"),
+        ("trip_route_number", "Route Number"),
+        ("remarks", "Remarks"),
+        ("id", "Fuel Log ID"),
+        ("trip_id", "Trip ID"),
+    )
+    worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(fields))
+    title = worksheet.cell(row=1, column=1, value="Fleet Management System - Fuel Logs")
+    title.font = Font(name="Aptos Display", size=16, bold=True, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="17365D")
+    title.alignment = Alignment(vertical="center")
+    worksheet.row_dimensions[1].height = 30
+    worksheet.cell(
+        row=2,
+        column=1,
+        value=f"Generated {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z')}",
+    ).font = Font(italic=True, color="64748B")
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    alternate_fill = PatternFill("solid", fgColor="EAF1F8")
+    for column, (_, label) in enumerate(fields, start=1):
+        cell = worksheet.cell(row=4, column=column, value=label)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    worksheet.row_dimensions[4].height = 30
+
+    for row_index, record in enumerate(fuel_logs, start=5):
+        vehicle = record.get("vehicle")
+        values = {
+            "logged_on": record.get("logged_on"),
+            "ism_no": record.get("trip_ism_no"),
+            "plate_number": (
+                vehicle.get("plate_number")
+                if isinstance(vehicle, dict)
+                else record.get("plate_number")
+            ),
+            "fuel_type": record.get("fuel_type"),
+            "quantity": record.get("quantity"),
+            "price_per_liter": record.get("price_per_liter"),
+            "total_cost": record.get("total_cost"),
+            "fuel_allocation": record.get("fuel_allocation"),
+            "actual_expense": record.get("actual_expense"),
+            "trip_origin": record.get("trip_origin"),
+            "trip_destination": record.get("trip_destination"),
+            "trip_route_number": record.get("trip_route_number"),
+            "remarks": record.get("remarks"),
+            "id": record.get("id"),
+            "trip_id": record.get("trip_id"),
+        }
+        for column, (field, _) in enumerate(fields, start=1):
+            value = _excel_cell_value(field, values[field])
+            cell = worksheet.cell(row=row_index, column=column, value=value)
+            if isinstance(value, str):
+                cell.data_type = "s"
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if row_index % 2:
+                cell.fill = alternate_fill
+            if field == "logged_on" and isinstance(value, date):
+                cell.number_format = "yyyy-mm-dd"
+            elif field in {"quantity", "trip_route_number", "id", "trip_id"}:
+                cell.number_format = "#,##0.00" if field == "quantity" else "0"
+            elif field in EXCEL_CURRENCY_FIELDS and value is not None:
+                cell.number_format = '"₱"#,##0.00;[Red]-"₱"#,##0.00'
+
+    last_column = get_column_letter(len(fields))
+    last_row = max(4, 4 + len(fuel_logs))
+    worksheet.auto_filter.ref = f"A4:{last_column}{last_row}"
+    worksheet.freeze_panes = "A5"
+    worksheet.print_title_rows = "1:4"
+    worksheet.page_setup.orientation = "landscape"
+    worksheet.page_setup.fitToWidth = 1
+    worksheet.page_setup.fitToHeight = 0
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+    worksheet.print_area = f"A1:{last_column}{last_row}"
+    for column, (field, label) in enumerate(fields, start=1):
+        values_for_width = [label]
+        values_for_width.extend(
+            str(
+                record.get("vehicle", {}).get("plate_number")
+                if field == "plate_number" and isinstance(record.get("vehicle"), dict)
+                else record.get({
+                    "ism_no": "trip_ism_no",
+                    "trip_origin": "trip_origin",
+                    "trip_destination": "trip_destination",
+                    "trip_route_number": "trip_route_number",
+                }.get(field, field))
+            )
+            for record in fuel_logs
+        )
+        worksheet.column_dimensions[get_column_letter(column)].width = min(
+            max(max(map(len, values_for_width), default=0) + 2, 12), 36
+        )
 
     output = BytesIO()
     workbook.save(output)

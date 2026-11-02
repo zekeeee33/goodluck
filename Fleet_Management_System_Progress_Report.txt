@@ -1,0 +1,184 @@
+FLEET MANAGEMENT SYSTEM
+COMPREHENSIVE PROGRESS REPORT
+
+Report date: October 31, 2026
+Overall status: The application includes the requested fleet, operations,
+finance, and reporting capabilities in its codebase. Confirming that required
+SQL migrations and historical-data repairs have been applied to the connected
+Supabase project remains an operational dependency.
+
+
+EXECUTIVE SUMMARY
+
+The system is a Flask application with a JavaScript frontend and Supabase-backed
+data and authorization. Recent work has focused on trip reporting and exports,
+making historical trip records editable, adding duplicate-trip review, and
+grouping report trips by driver name. The latest automated test run passed 138
+tests.
+
+Application code and database setup are separate deployment steps. Code
+changes do not automatically apply database migrations or repair historical
+data. Migration and setup instructions are documented in README.md.
+
+
+FEATURE PROGRESS
+
+Fleet and trip operations
+Vehicle, driver, trailer, trip, assignment, fuel, and maintenance records are
+supported.
+
+Dispatch
+Departure-to-arrival movements, location-based access, load details, and
+dispatch queues are implemented.
+
+Payroll and revenue
+Payroll review and finalization, revenue reporting, and audited revenue
+adjustments are implemented.
+
+Tire monitoring
+Tire records, service history, and replacement/removal workflows are
+implemented.
+
+Trip Records and Reports
+Administrator-only trip review and filtered reports are implemented in code.
+The Settings → Duplicate trips section scans all trips for repeated non-empty
+ISM numbers. The review shows matching trips and requires the administrator to
+select a trip to keep before enabling deletion of another match.
+
+Excel and PDF exports
+The requested workbook and grouped PDF features are implemented in code. Live
+database support depends on the required migrations being applied.
+
+Historical trip editing
+A per-row Edit action opens the existing trip editor.
+
+Frontend assets
+The app uses system fonts instead of downloading the problematic SF Pro files.
+
+
+TRIP REPORTS AND EXPORTS
+
+The report module supports filtering by date range, driver, truck, trailer,
+origin, destination, route, and trip status. It is designed to export all
+matching records, not only the currently visible page.
+
+The Excel builder creates six worksheets:
+  1. All Trips
+  2. By Driver
+  3. By Origin
+  4. By Destination
+  5. By Truck
+  6. By Trailer
+
+The By Driver worksheet presents separate driver sections with their own trip
+tables and summaries. Preview, Excel, and PDF group trips by normalized driver
+name, so the same driver's trips are not split solely because their records
+have different driver IDs. The PDF builder supports a selected grouping and
+landscape trip tables.
+
+Exports include trip details, odometer-based distance, group and overall
+totals, and revenue fields where reliable revenue data is available.
+
+Relevant files:
+  excel_report.py
+  trip_pdf_report.py
+  trip_report_utils.py
+  static/app.js
+  app.py
+  supabase_trip_reports_migration.sql
+
+
+REVENUE ACCURACY AND BLANK VALUES
+
+Revenue is based on the saved hauling-rate snapshot and audited adjustments. It
+is not estimated from fuel, salaries, or assumed rates. Trips that lack
+required verified rate, trailer, or capacity data, are cancelled, or are
+duplicate ISM records may have blank revenue. Blank values are excluded from
+average-revenue calculations.
+
+The report RPC and its revenue eligibility checks are defined in
+supabase_trip_reports_migration.sql.
+
+Historical trips with missing route or rate snapshots may need the documented
+backfill in supabase_trip_route_rate_backfill.sql. The backfill preserves
+uncertain records for review rather than guessing rates or trailer assignments.
+
+
+HISTORICAL TRIP EDITING
+
+Each row in the historical trips table has an Edit button that opens the
+existing trip editor. The issue where clicking it did nothing was caused by the
+Completed Trips page not including the details dialog required by that editor.
+The dialog was added, a regression assertion was added, and the script URL
+version was advanced to help bypass stale browser caching.
+
+Saving uses the established update flow. Route number, pallet capacity, and
+trip rate are resolved from route and trailer data rather than freely
+overridden.
+
+Relevant files:
+  static/app.js
+  app.py
+  trip_report_utils.py
+  README.md
+  tests/test_fleet_management.py
+
+
+BROWSER FONT WARNINGS
+
+The frontend no longer references the custom SF Pro font files that Firefox
+rejected. The Tailwind stylesheet was rebuilt to use the system font stack.
+
+A separate Firefox warning about Tailwind's WebKit-specific
+-webkit-text-size-adjust declaration may remain; that browser drops the
+unsupported declaration. It does not indicate an authentication failure.
+
+
+SECURITY AND DATA HANDLING
+
+The project uses Flask as the server-side API to Supabase. Service-role
+credentials are intended to remain server-side. Setup documentation describes
+authentication, dispatcher ownership, database policies, and
+administrator-only trip reporting. The report RPC also applies its own
+administrator restrictions.
+
+Relevant files:
+  README.md
+  supabase_trip_reports_migration.sql
+
+
+VALIDATION PERFORMED
+
+  - 135 automated tests passed using the full Python test suite.
+  - JavaScript syntax validation passed.
+  - The focused historical-trip edit regression test passed.
+  - The local server served the changed static assets during verification.
+  - The page redirected to sign-in when not authenticated, so an end-to-end
+    edit using the user's authorized session has not been confirmed here.
+
+
+REMAINING ROLLOUT AND CONFIRMATION ITEMS
+
+1. Verify the Supabase migrations. The Trip Reports migration depends on the
+   earlier trip-record, ownership, fuel-allocation, truck/trailer, revenue,
+   and location-dispatch setup documented in README.md. The repository cannot
+   confirm which migrations have already been applied to the live project.
+
+2. Backfill eligible historical route/rate snapshots where appropriate using
+   supabase_trip_route_rate_backfill.sql. Some records will still need human
+   review if capacity, trailer, or rate cannot be verified.
+
+3. Refresh in an authorized account and verify that Edit opens and saves a
+   historical trip. Download a new workbook and check the six worksheets and
+   revenue values against known eligible trips.
+
+4. Restart or redeploy Flask after backend changes and rebuild generated CSS
+   after Tailwind source changes, as outlined in README.md.
+
+
+BOTTOM LINE
+
+The requested feature work is present and automated tests are green. Live
+reporting accuracy, especially trailer and revenue data, still depends on the
+connected Supabase schema and the completeness of each trip's verified
+historical data.

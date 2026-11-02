@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from fleet_management import FleetManagementError
+from manifest_ocr import canonical_warehouse_code
 
 SHORT_ROUTES = {
     frozenset(("DAV2", "PLAS")),
@@ -27,9 +28,11 @@ def trip_rate(
     destination: str | None,
     allowances: dict[str, Decimal] | None = None,
 ) -> Decimal | None:
-    if not origin or not destination:
+    origin_code = canonical_warehouse_code(origin)
+    destination_code = canonical_warehouse_code(destination)
+    if not origin_code or not destination_code:
         return None
-    route = frozenset((origin.strip().upper(), destination.strip().upper()))
+    route = frozenset((origin_code, destination_code))
     if route in SHORT_ROUTES:
         return (allowances or {}).get("short", Decimal("200.00"))
     if route in LONG_ROUTES:

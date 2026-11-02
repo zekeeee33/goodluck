@@ -11,7 +11,7 @@
   --login-shadow: 0 18px 48px rgb(25 39 57 / 8%), 0 2px 6px rgb(25 39 57 / 4%);
   --login-focus: 0 0 0 3px color-mix(in srgb, var(--color-terracotta) 24%, transparent);
   --ease-ui: cubic-bezier(.2, .75, .25, 1);
-  font-family: "SF Pro Display", "Segoe UI", system-ui, sans-serif;
+  font-family: "Segoe UI", system-ui, sans-serif;
   color: var(--login-ink);
   background: var(--login-canvas);
   font-synthesis: none;
@@ -94,7 +94,7 @@ button:focus-visible, a:focus-visible, input:focus-visible { outline: 3px solid 
 
 .login-heading { margin: 38px 0 24px; }
 .login-eyebrow { margin: 0 0 9px; color: var(--color-terracotta); font-size: 10px; font-weight: 700; letter-spacing: 1.1px; }
-h1 { margin: 0; font-family: "SF Pro Display", "Segoe UI", system-ui, sans-serif; font-size: 29px; font-weight: 800; letter-spacing: -1px; }
+h1 { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; font-size: 29px; font-weight: 800; letter-spacing: -1px; }
 .login-heading > p:last-child { margin: 9px 0 0; color: var(--login-muted); font-size: 13px; line-height: 1.5; }
 
 #login-form { display: grid; gap: 10px; }

@@ -9,6 +9,7 @@ const TITLES = {
   fuel: "Fuel logs",
   tires: "Tire Monitoring Sheet",
   trips: "Movement workflow",
+  "trip-reports": "Trip Reports",
   "trip-records": "Trip Records",
   "completed-trips": "Completed Trips",
   payroll: "Payroll",
@@ -376,6 +377,42 @@ const state = {
     requestedKey: "",
     loading: false,
     error: "",
+    duplicateScan: {
+      groups: [],
+      keepers: {},
+      loading: false,
+      scanned: false,
+      error: "",
+    },
+  },
+  tripReport: {
+    report_type: "all",
+    date_from: "",
+    date_to: "",
+    driver_ids: [],
+    truck_ids: [],
+    trailer_ids: [],
+    origins: [],
+    destinations: [],
+    routes: [],
+    statuses: [],
+    search: "",
+    page: 1,
+    page_size: 50,
+    filters_open: false,
+    options: null,
+    optionsLoading: false,
+    optionsAttempted: false,
+    optionsError: "",
+    records: [],
+    total: 0,
+    summary: null,
+    loading: false,
+    exporting: "",
+    error: "",
+    filtersDirty: true,
+    requestKey: "",
+    generatedPdfUrl: "",
   },
   completedTrips: {
     records: [],
@@ -393,6 +430,12 @@ const state = {
     formOpen: true,
     editingId: null,
     formError: "",
+    loadType: "",
+    loadItems: [],
+    loadCatalogSearch: "",
+    loadCatalogSection: "",
+    movingAll: false,
+    transferResults: [],
   },
   tripWizard: {
     step: 0,
@@ -421,6 +464,9 @@ view.addEventListener("toggle", (event) => {
   }
   if (event.target.matches?.(".trip-record-filter-disclosure")) {
     state.tripRecords.filters_open = event.target.open;
+  }
+  if (event.target.matches?.(".trip-report-filter-disclosure")) {
+    state.tripReport.filters_open = event.target.open;
   }
 }, true);
 let idleLogoutTimer;
@@ -967,7 +1013,7 @@ function tableMarkup(rows, columns, resource, options = {}) {
       return `<td data-label="${escapeHtml(label)}">${value}</td>`;
     }).join("");
     const action = resource
-        ? `<td class="action-column" data-label="Action"><button class="icon-button delete-button" type="button" data-action="delete" data-resource="${escapeHtml(resource)}" data-id="${escapeHtml(row.id)}" aria-label="Delete ${escapeHtml(RESOURCE_CONFIG[resource]?.singular || "record")}">×</button></td>`
+        ? `<td class="action-column" data-label="Action">${options.editTrips ? `<button class="button button-secondary button-small" type="button" data-action="edit-trip-record" data-id="${escapeHtml(row.id)}">Edit</button>` : ""}<button class="icon-button delete-button" type="button" data-action="delete" data-resource="${escapeHtml(resource)}" data-id="${escapeHtml(row.id)}" aria-label="Delete ${escapeHtml(RESOURCE_CONFIG[resource]?.singular || "record")}">×</button></td>`
       : "";
     const rowAttributes = options.rowAction
         ? `tabindex="0" role="button" class="clickable-row" data-action="${escapeHtml(options.rowAction)}" data-id="${escapeHtml(row.id)}" data-record-id="${escapeHtml(row.id)}" aria-label="${escapeHtml(options.rowLabel ? options.rowLabel(row) : `View trip ${row.ism_no || row.id}`)}"`
@@ -2511,6 +2557,11 @@ async function loadDispatchLoadCatalog({ force = false } = {}) {
         && !window.location.hash) {
       refreshDispatchCatalogStage(view.querySelector(".dispatch-departure-form"));
     }
+    if (state.page === "completed-trips") {
+      const completedForm = view.querySelector(".completed-trip-form");
+      if (completedForm) refreshCompletedTripCatalog(completedForm);
+      else render();
+    }
   }
 }
 
@@ -3086,8 +3137,8 @@ function renderDispatchWorkflow() {
         ? "Arrivals only show movements with a submitted departure manifest for locations where your account has receive-arrivals access. Ask an administrator to assign you at the destination location."
         : "New movements will appear here when they match this workflow."}</small></div>`;
   const legacyRows = isAdmin
-    ? `<section class="panel records-panel dispatch-historical-records"><div class="panel-heading"><div><p class="eyebrow">HISTORICAL RECORDS</p><h2>Trips recorded before the dispatch workflow</h2><p class="dispatch-table-guidance">Scroll horizontally to review all trip fields. Select a row to open its details.</p></div></div>
-        ${tableMarkup(state.data.trips || [], RESOURCE_CONFIG.trips.columns, RESOURCE_CONFIG.trips.api, { empty: "No historical trip records", rowAction: "trip-details" })}</section>`
+    ? `<section class="panel records-panel dispatch-historical-records"><div class="panel-heading"><div><p class="eyebrow">HISTORICAL RECORDS</p><h2>Trips recorded before the dispatch workflow</h2><p class="dispatch-table-guidance">Scroll horizontally to review all trip fields. Select Edit to update a trip; route number, pallet capacity, and trip rate are resolved from the selected route and trailer.</p></div></div>
+        ${tableMarkup(state.data.trips || [], RESOURCE_CONFIG.trips.columns, RESOURCE_CONFIG.trips.api, { empty: "No historical trip records", rowAction: "trip-details", editTrips: true })}</section>`
     : "";
   return `
     ${header("LOCATION DISPATCH", "Departure → Arrival", "One movement ID. The receiving dispatcher verifies the manifest before arrival; only admins finalize financial trips.", '<button class="button button-secondary" data-action="dispatch-reload" type="button">Refresh</button>')}
@@ -3104,7 +3155,7 @@ function renderDispatchWorkflow() {
       <p class="record-count">${formatNumber(state.dispatch.total)} ${state.dispatch.total === 1 ? "movement" : "movements"}</p>
       ${listMarkup}
     </section>
-    ${tab === "completed" ? legacyRows : ""}`;
+    ${tab === "completed" ? `${legacyRows}${tripDetailsDialogMarkup()}` : ""}`;
 }
 
 function tripRecordsQueryKey() {
@@ -3155,8 +3206,404 @@ async function loadTripRecords({ force = false } = {}) {
   } finally {
     if (key === records.requestedKey) {
       records.loading = false;
-      if (state.page === "trip-records") render();
+      if (
+        state.page === "trip-records"
+        || (state.page === "settings" && state.settings.section === "duplicate-trips")
+      ) render();
     }
+  }
+}
+
+async function scanTripDuplicates() {
+  const scan = state.tripRecords.duplicateScan;
+  if (scan.loading) return;
+  scan.loading = true;
+  scan.error = "";
+  render();
+  try {
+    const result = await api("/api/admin/trip-duplicates");
+    scan.groups = result.groups || [];
+    scan.keepers = {};
+    scan.scanned = true;
+  } catch (error) {
+    scan.error = error.message || "Could not scan all trips for duplicates.";
+  } finally {
+    scan.loading = false;
+    if (
+      state.page === "trip-records"
+      || (state.page === "settings" && state.settings.section === "duplicate-trips")
+    ) render();
+  }
+}
+
+const TRIP_REPORT_TYPES = {
+  all: "All Trips",
+  driver: "By Driver",
+  origin: "By Origin",
+  destination: "By Destination",
+  truck: "By Truck",
+  trailer: "By Trailer",
+};
+
+async function loadTripReportOptions({ force = false } = {}) {
+  const report = state.tripReport;
+  if (report.optionsLoading || (!force && (report.options || report.optionsAttempted))) return;
+  report.optionsLoading = true;
+  report.optionsAttempted = true;
+  report.optionsError = "";
+  try {
+    report.options = await api("/api/admin/trip-reports/options");
+  } catch (error) {
+    report.optionsError = error.message === "Not found" || error.message?.includes("(404)")
+      ? "The Trip Reports endpoint is missing from the running Flask server. Stop the old server process, start app.py from this project folder, and refresh this page."
+      : error.message || "Could not load trip report filters.";
+  } finally {
+    report.optionsLoading = false;
+    if (state.page === "trip-reports") render();
+  }
+}
+
+function tripReportQueryKey() {
+  const { report_type, date_from, date_to, driver_ids, truck_ids, origins,
+    trailer_ids, destinations, routes, statuses, search, page, page_size } = state.tripReport;
+  return JSON.stringify({
+    report_type, date_from, date_to, driver_ids, truck_ids, trailer_ids, origins,
+    destinations, routes, statuses, search, page, page_size,
+  });
+}
+
+function tripReportActiveFilterCount(report = state.tripReport) {
+  return [
+    report.report_type !== "all",
+    report.date_from,
+    report.date_to,
+    report.search.trim(),
+    ...report.driver_ids,
+    ...report.truck_ids,
+    ...report.trailer_ids,
+    ...report.origins,
+    ...report.destinations,
+    ...report.routes,
+    ...report.statuses,
+  ].filter(Boolean).length;
+}
+
+async function loadTripReportPreview({ force = false } = {}) {
+  const report = state.tripReport;
+  const key = tripReportQueryKey();
+  if (report.loading || (!force && report.requestKey === key)) return;
+  report.requestKey = key;
+  report.loading = true;
+  report.error = "";
+  render();
+  const params = new URLSearchParams({
+    report_type: report.report_type,
+    page: String(report.page),
+    page_size: String(report.page_size),
+    search: report.search,
+    date_from: report.date_from,
+    date_to: report.date_to,
+  });
+  for (const [field, values] of [
+    ["driver_id", report.driver_ids],
+    ["truck_id", report.truck_ids],
+    ["trailer_id", report.trailer_ids],
+    ["origin", report.origins],
+    ["destination", report.destinations],
+    ["route", report.routes],
+    ["status", report.statuses],
+  ]) {
+    values.forEach((value) => params.append(field, String(value)));
+  }
+  try {
+    const result = await api(`/api/admin/trip-reports?${params.toString()}`);
+    if (key !== tripReportQueryKey()) return;
+    report.records = result.records || [];
+    report.total = Number(result.total || 0);
+    report.summary = result.summary || null;
+    report.filtersDirty = false;
+  } catch (error) {
+    if (key === tripReportQueryKey()) {
+      report.error = error.message || "Could not load the trip report preview.";
+    }
+  } finally {
+    if (key === report.requestKey) {
+      report.loading = false;
+      if (state.page === "trip-reports") render();
+    }
+  }
+}
+
+function tripReportFilterSelect(key, label, values, selected, getValue, getLabel) {
+  const choices = (values || []).map((item) => ({
+    value: String(getValue(item)),
+    label: String(getLabel(item)),
+  }));
+  const selectedLabels = choices
+    .filter((choice) => selected.includes(choice.value))
+    .map((choice) => choice.label);
+  const summary = selectedLabels.length
+    ? `${selectedLabels.length} selected`
+    : `All ${label.toLowerCase()}`;
+  const options = choices.length
+    ? choices.map((choice) => `
+        <label class="trip-report-dropdown-option">
+          <input type="checkbox" data-trip-report-filter="${key}" value="${escapeHtml(choice.value)}" ${selected.includes(choice.value) ? "checked" : ""} />
+          <span>${escapeHtml(choice.label)}</span>
+        </label>`).join("")
+    : '<p class="trip-report-dropdown-empty">No options available</p>';
+  return `<details class="trip-report-dropdown">
+    <summary class="trip-report-dropdown-summary" aria-label="${label}">
+      <span>${label}</span><span class="trip-report-dropdown-value" data-trip-report-dropdown-value="${key}">${escapeHtml(summary)}</span>
+    </summary>
+    <div class="trip-report-dropdown-menu">${options}</div>
+  </details>`;
+}
+
+function groupTripReportRecords(records, groupBy) {
+  const groups = new Map();
+  for (const trip of records) {
+    const name = String(trip.driver_name || "").trim().replace(/\s+/g, " ");
+    let label;
+    let identity;
+    if (groupBy === "driver") {
+      label = name || "Unassigned driver";
+      identity = label.toLocaleLowerCase();
+    } else if (groupBy === "origin") {
+      label = String(trip.origin || "").trim() || "Unknown origin";
+      identity = label.toLocaleLowerCase();
+    } else if (groupBy === "destination") {
+      label = String(trip.destination || "").trim() || "Unknown destination";
+      identity = label.toLocaleLowerCase();
+    } else if (groupBy === "truck") {
+      label = String(trip.truck_plate || "").trim() || "Unknown truck";
+      identity = trip.truck_id ?? label.toLocaleLowerCase();
+    } else if (groupBy === "trailer") {
+      label = String(trip.trailer_plate || "").trim() || "No trailer";
+      identity = trip.trailer_id ?? label.toLocaleLowerCase();
+    } else {
+      label = "All Trips";
+      identity = "all";
+    }
+    const key = `${groupBy}:${identity}`;
+    if (!groups.has(key)) {
+      groups.set(key, { name: label, records: [] });
+    }
+    groups.get(key).records.push(trip);
+  }
+  return Array.from(groups.values()).sort((left, right) =>
+    left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+}
+
+function tripReportGroupedTables(records, groupBy) {
+  const headers = [
+    "Trip ID", "Trip Date", "Driver", "Truck", "Trailer", "Origin",
+    "Destination", "Distance", "Shipment Date", "ISM", "Time In", "Time Out",
+    "Trip Revenue",
+  ];
+  return groupTripReportRecords(records, groupBy).map((group) => `
+    <section class="trip-report-driver-group">
+      <h3>${escapeHtml(group.name)} <span>(${formatNumber(group.records.length)} ${group.records.length === 1 ? "trip" : "trips"})</span></h3>
+      <div class="table-wrap trip-report-preview-wrap"><table class="trip-record-table">
+        <thead><tr>${headers.map((label) => `<th>${label}</th>`).join("")}</tr></thead>
+        <tbody>${group.records.map((item) => `<tr>
+          <td>${escapeHtml(item.id)}</td><td>${escapeHtml(item.trip_date || "—")}</td>
+          <td>${escapeHtml(item.driver_name || "—")}</td>
+          <td>${escapeHtml(item.truck_plate || "—")}</td><td>${escapeHtml(item.trailer_plate || "—")}</td>
+          <td>${escapeHtml(item.origin || "—")}</td><td>${escapeHtml(item.destination || "—")}</td>
+          <td>${item.distance == null ? "—" : `${formatNumber(item.distance)} km`}</td>
+          <td>${escapeHtml(item.shipment_date || "—")}</td><td>${escapeHtml(item.ism_no || "—")}</td>
+          <td>${escapeHtml(item.time_in || "—")}</td><td>${escapeHtml(item.time_out || "—")}</td>
+          <td>${item.trip_revenue == null ? "—" : escapeHtml(formatCurrency(item.trip_revenue))}</td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </section>`).join("");
+}
+
+function renderTripReports() {
+  if (state.data?.user?.role !== "administrator") {
+    return `${header("REPORTS & ANALYTICS", "Trip Reports", "Administrator access is required.")}<section class="error-card"><p>Only administrators can generate trip reports.</p></section>`;
+  }
+  const report = state.tripReport;
+  if (!report.options && !report.optionsLoading && !report.optionsAttempted) {
+    loadTripReportOptions();
+  }
+
+  const reportOptions = report.options || {};
+  const reportActiveFilters = tripReportActiveFilterCount(report);
+  const reportTotalPages = Math.max(1, Math.ceil(report.total / report.page_size));
+  const reportDatePart = [report.date_from, report.date_to].filter(Boolean).join("_to_")
+    || new Date().toISOString().slice(0, 10);
+  const reportPreview = report.loading
+    ? '<div class="empty-state"><strong>Loading filtered report…</strong></div>'
+    : report.error
+      ? `<section class="error-card"><p>${escapeHtml(report.error)}</p></section>`
+      : report.requestKey && !report.filtersDirty
+        ? report.records.length
+          ? `${tripReportGroupedTables(report.records, report.report_type)}
+            <nav class="pagination trip-record-pagination" aria-label="Trip report pages">
+              <button class="button button-secondary button-small" type="button" data-action="trip-report-page" data-page="${Math.max(1, report.page - 1)}" ${report.page <= 1 ? "disabled" : ""}>Previous</button>
+              <span>Page ${report.page} of ${reportTotalPages}</span>
+              <button class="button button-secondary button-small" type="button" data-action="trip-report-page" data-page="${Math.min(reportTotalPages, report.page + 1)}" ${report.page >= reportTotalPages ? "disabled" : ""}>Next</button>
+            </nav>`
+          : '<div class="empty-state"><strong>No trips match these filters</strong><small>Change one or more filters and preview again.</small></div>'
+        : '<div class="empty-state"><strong>Choose report filters</strong><small>Apply filters to preview matching trips before exporting.</small></div>';
+
+  return `
+    ${header("REPORTS & ANALYTICS", "Trip Reports", "Create and export filtered trip reports.")}
+    <section class="panel trip-report-panel" aria-labelledby="trip-report-title">
+      <div class="panel-heading records-heading trip-report-heading">
+        <div><p class="eyebrow">TRIP REPORTS</p><h2 id="trip-report-title">Trip Reports</h2><p class="muted-copy">Filter trips, preview results, then export all matching trips. Excel includes all six worksheets; PDF uses the selected grouping.</p></div>
+        <div class="trip-report-actions">
+          <button class="button button-primary" type="button" data-action="trip-report-apply" ${report.loading || report.exporting ? "disabled" : ""}>Preview Report</button>
+          <button class="button button-secondary" type="button" data-action="trip-report-clear" ${report.loading || report.exporting ? "disabled" : ""}>Clear filters</button>
+          <button class="button button-secondary" type="button" data-action="trip-report-generate-pdf" ${report.loading || report.exporting || report.filtersDirty || !report.total ? "disabled" : ""}>${report.exporting === "pdf" ? "Generating PDF…" : "Export to PDF (.pdf)"}</button>
+          <button class="button button-secondary" type="button" data-action="trip-report-excel" ${report.loading || report.exporting || report.filtersDirty || !report.total ? "disabled" : ""}>${report.exporting === "excel" ? "Generating Excel…" : "Export to Excel (.xlsx)"}</button>
+          ${report.generatedPdfUrl && !report.filtersDirty ? `<a class="button button-secondary" href="${report.generatedPdfUrl}" download="Trip_Report_${escapeHtml(reportDatePart)}_${escapeHtml(report.report_type)}.pdf">Download PDF</a><button class="button button-secondary" type="button" data-action="trip-report-print">Print Report</button>` : ""}
+        </div>
+      </div>
+      ${report.optionsLoading ? '<p class="record-count">Loading report filter options…</p>' : ""}
+      ${report.optionsError ? `<section class="error-card"><p>${escapeHtml(report.optionsError)}</p><button class="button button-secondary button-small" type="button" data-action="trip-report-options-retry">Retry filter options</button></section>` : ""}
+      <details class="trip-report-filter-disclosure" ${report.filters_open ? "open" : ""}>
+        <summary class="trip-report-filter-summary">
+          <span>Filters</span>
+          <span class="trip-report-filter-indicator">${reportActiveFilters ? `${reportActiveFilters} selected` : "No filters selected"}</span>
+        </summary>
+        <div class="trip-report-basic-filters" aria-label="Trip report options">
+          <label class="form-field"><span>Report grouping</span><select data-trip-report-filter="report_type">${Object.entries(TRIP_REPORT_TYPES).map(([value, label]) => `<option value="${value}" ${report.report_type === value ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+          <label class="form-field"><span>Shipment date from</span><input type="date" data-trip-report-filter="date_from" value="${escapeHtml(report.date_from)}" /></label>
+          <label class="form-field"><span>Shipment date to</span><input type="date" data-trip-report-filter="date_to" value="${escapeHtml(report.date_to)}" /></label>
+          <label class="form-field"><span>Search</span><input type="search" data-trip-report-filter="search" value="${escapeHtml(report.search)}" placeholder="ISM, trip ID, driver, plate…" /></label>
+        </div>
+        <div class="trip-report-filters" aria-label="Additional trip report filters">
+          ${tripReportFilterSelect("driver_ids", "Drivers", reportOptions.drivers, report.driver_ids, (item) => item.id, (item) => item.name)}
+          ${tripReportFilterSelect("truck_ids", "Vehicles", reportOptions.trucks, report.truck_ids, (item) => item.id, (item) => item.plate_number)}
+          ${tripReportFilterSelect("trailer_ids", "Trailers", reportOptions.trailers, report.trailer_ids, (item) => item.id, (item) => item.plate_number)}
+          ${tripReportFilterSelect("origins", "Origins", reportOptions.origins, report.origins, (item) => item, (item) => item)}
+          ${tripReportFilterSelect("destinations", "Destinations", reportOptions.destinations, report.destinations, (item) => item, (item) => item)}
+          ${tripReportFilterSelect("routes", "Routes", reportOptions.routes, report.routes, (item) => item.value, (item) => item.label)}
+          ${tripReportFilterSelect("statuses", "Trip status", reportOptions.statuses, report.statuses, (item) => item.value, (item) => item.label)}
+          <label class="form-field trip-report-page-size"><span>Preview rows</span><select data-trip-report-filter="page_size">${[25, 50, 100].map((size) => `<option value="${size}" ${report.page_size === size ? "selected" : ""}>${size}</option>`).join("")}</select></label>
+        </div>
+      </details>
+      <div class="trip-report-summary">
+        <strong>${formatNumber(report.total)} matching trips</strong><span>·</span>
+        <span>${formatNumber(report.summary?.total_distance || 0)} km measured</span>
+        <span>·</span><span>Gross trip revenue: ${formatCurrency(report.summary?.total_revenue || 0)}</span>
+        ${report.summary?.average_revenue_per_trip != null ? `<span>·</span><span>Average per revenue trip: ${formatCurrency(report.summary.average_revenue_per_trip)}</span>` : ""}
+        ${report.summary?.distance_trip_count ? `<span>from ${formatNumber(report.summary.distance_trip_count)} trips with odometer readings</span>` : ""}
+      </div>
+      <div class="trip-report-preview">${reportPreview}</div>
+    </section>`;
+}
+
+function tripReportQueryString() {
+  const report = state.tripReport;
+  const params = new URLSearchParams({
+    report_type: report.report_type,
+    search: report.search,
+    date_from: report.date_from,
+    date_to: report.date_to,
+  });
+  for (const [field, values] of [
+    ["driver_id", report.driver_ids],
+    ["truck_id", report.truck_ids],
+    ["trailer_id", report.trailer_ids],
+    ["origin", report.origins],
+    ["destination", report.destinations],
+    ["route", report.routes],
+    ["status", report.statuses],
+  ]) {
+    values.forEach((value) => params.append(field, String(value)));
+  }
+  return params.toString();
+}
+
+function releaseTripReportPdf() {
+  const report = state.tripReport;
+  if (report.generatedPdfUrl) URL.revokeObjectURL(report.generatedPdfUrl);
+  report.generatedPdfUrl = "";
+}
+
+function markTripReportDirty() {
+  const report = state.tripReport;
+  report.filtersDirty = true;
+  report.total = 0;
+  report.records = [];
+  report.summary = null;
+  report.requestKey = "";
+  report.loading = false;
+  report.error = "";
+  releaseTripReportPdf();
+  const summary = view.querySelector(".trip-report-summary");
+  if (summary) summary.innerHTML = "<strong>Filters changed</strong><span>Preview again to refresh the report.</span>";
+  const preview = view.querySelector(".trip-report-preview");
+  if (preview) preview.innerHTML = '<div class="empty-state"><strong>Preview required</strong><small>Apply filters to see matching trips.</small></div>';
+  const activeFilters = tripReportActiveFilterCount(report);
+  const filterIndicator = view.querySelector(".trip-report-filter-indicator");
+  if (filterIndicator) {
+    filterIndicator.textContent = activeFilters
+      ? `${activeFilters} selected`
+      : "No filters selected";
+  }
+  view.querySelectorAll('[data-action="trip-report-generate-pdf"], [data-action="trip-report-excel"]').forEach((button) => {
+    button.disabled = true;
+  });
+  view.querySelectorAll('[data-action="trip-report-print"], a[download^="trip-report-"]').forEach((element) => {
+    element.remove();
+  });
+}
+
+async function downloadTripReport(format) {
+  const report = state.tripReport;
+  if (report.exporting) return;
+  report.error = "";
+  if (report.total < 1) {
+    report.error = "Apply filters and preview at least one trip before exporting.";
+    render();
+    return;
+  }
+  const action = format === "pdf" ? "pdf" : "excel";
+  report.exporting = format;
+  render();
+  try {
+    const response = await fetch(`/api/admin/trip-reports/${action}?${tripReportQueryString()}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || `Report export failed (${response.status}).`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const datePart = [report.date_from, report.date_to].filter(Boolean).join("_to_")
+      || new Date().toISOString().slice(0, 10);
+    const serverFilename = response.headers.get("Content-Disposition")
+      ?.match(/filename="?([^";]+)"?/i)?.[1];
+    if (format === "pdf") {
+      releaseTripReportPdf();
+      report.generatedPdfUrl = url;
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = serverFilename
+        || `Trip_Report_${datePart}_${report.report_type}.pdf`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+    } else {
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = serverFilename || `Trip_Report_${datePart}.xlsx`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    }
+  } catch (error) {
+    report.error = error.message || "Could not export this trip report.";
+  } finally {
+    report.exporting = "";
+    if (state.page === "trip-reports") render();
   }
 }
 
@@ -3185,6 +3632,50 @@ function tripRecordSortButton(label, field) {
     ? (direction === "asc" ? "ascending" : "descending")
     : "none";
   return `<th scope="col" aria-sort="${ariaSort}"><button class="text-button trip-record-sort" type="button" data-action="trip-record-sort" data-sort="${field}">${label}${selected ? (direction === "asc" ? " ↑" : " ↓") : ""}</button></th>`;
+}
+
+function renderDuplicateTripSettings() {
+  const duplicateScan = state.tripRecords.duplicateScan;
+  const duplicateMarkup = duplicateScan.loading
+    ? '<div class="empty-state"><strong>Scanning all trips…</strong><small>Checking every recorded trip, not just this page or the current filters.</small></div>'
+    : duplicateScan.error
+      ? `<section class="error-card"><p>${escapeHtml(duplicateScan.error)}</p><button class="button button-secondary" type="button" data-action="trip-duplicates-scan">Retry scan</button></section>`
+      : duplicateScan.scanned && !duplicateScan.groups.length
+        ? '<div class="empty-state"><strong>No duplicate ISM numbers found</strong><small>Every trip with a non-empty ISM number was checked.</small></div>'
+        : duplicateScan.groups.map((group) => `
+          <section class="trip-duplicate-group" aria-labelledby="trip-duplicate-${escapeHtml(group.key)}">
+            <div class="trip-group-heading">
+              <h3 id="trip-duplicate-${escapeHtml(group.key)}">ISM ${escapeHtml(group.ism_no)}</h3>
+              <span class="record-count">${group.trips.length} matching trips</span>
+            </div>
+            <div class="table-wrap">
+              <table class="data-table trip-duplicate-table">
+                <thead><tr><th scope="col">Trip</th><th scope="col">Shipment date</th><th scope="col">Route</th><th scope="col">Driver</th><th scope="col">Truck / trailer</th><th scope="col">Decision</th></tr></thead>
+                <tbody>${group.trips.map((trip) => {
+                  const keeperId = duplicateScan.keepers[group.key];
+                  const isKeeper = String(keeperId) === String(trip.id);
+                  const canDelete = keeperId && !isKeeper;
+                  return `<tr class="${isKeeper ? "trip-duplicate-keeper" : ""}">
+                    <td data-label="Trip">#${escapeHtml(trip.id)}</td>
+                    <td data-label="Shipment date">${escapeHtml(trip.shipment_date || trip.trip_date || "—")}</td>
+                    <td data-label="Route">${escapeHtml([trip.origin, trip.destination].filter(Boolean).join(" → ") || "—")}</td>
+                    <td data-label="Driver">${escapeHtml(trip.driver_name || "—")}</td>
+                    <td data-label="Truck / trailer">${escapeHtml([trip.truck_plate, trip.trailer_plate].filter(Boolean).join(" / ") || "—")}</td>
+                    <td data-label="Decision"><label class="trip-duplicate-keep"><input type="radio" name="keep-${escapeHtml(group.key)}" value="${escapeHtml(trip.id)}" data-trip-duplicate-keep="${escapeHtml(group.key)}" ${isKeeper ? "checked" : ""} /><span>Keep this trip</span></label>${canDelete ? `<button class="button button-secondary button-small trip-duplicate-delete" type="button" data-action="trip-duplicate-delete" data-group-key="${escapeHtml(group.key)}" data-trip-id="${escapeHtml(trip.id)}">Delete this trip</button>` : ""}</td>
+                  </tr>`;
+                }).join("")}</tbody>
+              </table>
+            </div>
+            ${!duplicateScan.keepers[group.key] ? '<p class="trip-duplicate-guidance">Choose the trip to keep before deleting any other match.</p>' : ""}
+          </section>`).join("");
+  return `
+    <section class="panel trip-duplicate-panel">
+      <div class="panel-heading">
+        <div><p class="eyebrow">DATA CLEANUP</p><h2>Duplicate trips</h2><p class="muted-copy">Scan every trip for repeated, non-empty ISM numbers. Select one trip to keep before deleting another.</p></div>
+        <button class="button button-secondary" type="button" data-action="trip-duplicates-scan" ${duplicateScan.loading ? "disabled" : ""}>${duplicateScan.loading ? "Scanning…" : duplicateScan.scanned ? "Scan again" : "Scan all trips"}</button>
+      </div>
+      ${duplicateScan.scanned || duplicateScan.loading || duplicateScan.error ? duplicateMarkup : '<p class="trip-duplicate-guidance">No scan has been run yet. The scan is not limited by the filters or page below.</p>'}
+    </section>`;
 }
 
 function renderTripRecords() {
@@ -3965,11 +4456,260 @@ function syncCompletedTripsNavigation() {
   grid.append(link);
 }
 
+function parseCompletedTripLoad(value) {
+  const raw = String(value || "");
+  if (!raw.startsWith("CATALOG:")) {
+    return { load_type: "", pallet_quantity: "", items: [] };
+  }
+  try {
+    const parsed = JSON.parse(raw.slice("CATALOG:".length));
+    return {
+      load_type: ["FULLS", "EMPTIES", "NO_LOAD"].includes(parsed.load_type)
+        ? parsed.load_type
+        : "",
+      pallet_quantity: parsed.pallet_quantity == null
+        ? ""
+        : String(parsed.pallet_quantity),
+      items: Array.isArray(parsed.items)
+        ? parsed.items.filter((item) =>
+          Number.isInteger(Number(item.product_id))
+          && Number(item.product_id) > 0
+          && Number.isInteger(Number(item.pallet_quantity))
+          && Number(item.pallet_quantity) > 0,
+        ).map((item) => ({
+          product_id: Number(item.product_id),
+          pallet_quantity: Number(item.pallet_quantity),
+        }))
+        : [],
+    };
+  } catch {
+    return { load_type: "", pallet_quantity: "", items: [] };
+  }
+}
+
+function completedTripLoadLabel(value) {
+  const parsed = parseCompletedTripLoad(value);
+  if (!String(value || "").startsWith("CATALOG:")) return String(value || "—");
+  if (parsed.load_type === "NO_LOAD") return "NO LOAD";
+  if (parsed.load_type === "EMPTIES") {
+    return `EMPTIES · ${parsed.pallet_quantity || 0} pallets`;
+  }
+  const products = parsed.items.map((item) => {
+    const product = state.dispatch.loadCatalog.find(
+      (candidate) => Number(candidate.id) === item.product_id,
+    );
+    return `${product ? `${product.brand}${product.packing ? ` (${product.packing})` : ""}` : `Product #${item.product_id}`} × ${item.pallet_quantity} pallets`;
+  });
+  return [`FULLS · ${parsed.pallet_quantity || 0} pallets`, ...products].join(" · ");
+}
+
+function completedTripSelectedLoadMarkup() {
+  const completed = state.completedTrips;
+  const loadType = completed.loadType;
+  if (loadType === "NO_LOAD") {
+    return '<p class="dispatch-load-empty">No load or pallets are recorded for this trip.</p>';
+  }
+  if (loadType === "EMPTIES") {
+    return '<p class="dispatch-load-empty">Product selection is not required for empty-container trips.</p>';
+  }
+  const selected = completed.loadItems;
+  if (!selected.length) {
+    return '<p class="dispatch-load-empty">No products selected.</p>';
+  }
+  return `<div class="dispatch-selected-load-list">${selected.map((item) => {
+    const product = state.dispatch.loadCatalog.find(
+      (candidate) => Number(candidate.id) === Number(item.product_id),
+    );
+    if (!product) return "";
+    return `<article class="dispatch-selected-load-item">
+      <div><strong>${escapeHtml(product.brand)}</strong><small>${escapeHtml(product.section)}${product.packing ? ` · ${escapeHtml(product.packing)}` : ""}</small></div>
+      <span>${formatNumber(item.pallet_quantity)} ${item.pallet_quantity === 1 ? "pallet" : "pallets"}</span>
+      <button class="button button-secondary button-small" type="button" data-action="completed-trip-remove-load-product" data-product-id="${escapeHtml(product.id)}">Remove</button>
+    </article>`;
+  }).join("")}</div>`;
+}
+
+function completedTripCatalogMarkup() {
+  const completed = state.completedTrips;
+  if (completed.loadType !== "FULLS") {
+    return '<p class="dispatch-catalog-empty">Select FULLS to choose products from the load catalog.</p>';
+  }
+  if (state.dispatch.loadCatalogLoading) {
+    return '<p class="dispatch-catalog-empty" role="status">Loading load catalog…</p>';
+  }
+  if (state.dispatch.loadCatalogError) {
+    return `<div class="dispatch-load-catalog-error" role="alert"><p>${escapeHtml(state.dispatch.loadCatalogError)}</p><button class="button button-secondary button-small" type="button" data-action="dispatch-load-catalog-retry">Retry</button></div>`;
+  }
+  if (!state.dispatch.loadCatalog.length) {
+    return '<p class="dispatch-catalog-empty">No active products are available in the load catalog.</p>';
+  }
+  const sections = [...new Set(state.dispatch.loadCatalog.map((product) => product.section))];
+  const search = completed.loadCatalogSearch.trim().toLocaleLowerCase();
+  const products = state.dispatch.loadCatalog.filter((product) =>
+    (!completed.loadCatalogSection || product.section === completed.loadCatalogSection)
+    && (!search || `${product.brand} ${product.section} ${product.packing}`.toLocaleLowerCase().includes(search)),
+  );
+  const filters = [
+    `<button class="dispatch-catalog-filter ${completed.loadCatalogSection ? "" : "is-active"}" type="button" data-action="completed-trip-load-section" data-section="" aria-pressed="${!completed.loadCatalogSection}">All products</button>`,
+    ...sections.map((section) =>
+      `<button class="dispatch-catalog-filter ${completed.loadCatalogSection === section ? "is-active" : ""}" type="button" data-action="completed-trip-load-section" data-section="${escapeHtml(section)}" aria-pressed="${completed.loadCatalogSection === section}">${escapeHtml(section)}</button>`,
+    ),
+  ].join("");
+  const cards = products.length
+    ? `<div class="dispatch-product-grid">${products.map((product) => {
+      const selected = completed.loadItems.find(
+        (item) => Number(item.product_id) === Number(product.id),
+      );
+      return `<article class="dispatch-product-card ${selected ? "is-selected" : ""}">
+        <button class="dispatch-product-card-select" type="button" data-action="completed-trip-select-load-product" data-product-id="${escapeHtml(product.id)}" aria-pressed="${Boolean(selected)}">
+          <span class="dispatch-product-visual"><span class="dispatch-product-art" aria-hidden="true">▧</span>${selected ? '<span class="dispatch-product-selected-badge">✓ Selected</span>' : ""}</span>
+          <span class="dispatch-product-card-copy"><span class="dispatch-product-section">${escapeHtml(product.section)}</span><strong>${escapeHtml(product.brand)}</strong><span>${product.packing ? escapeHtml(product.packing) : "Packing not specified"}</span>${product.quantity == null ? "" : `<small>${formatNumber(product.quantity)} units in pack</small>`}</span>
+        </button>
+        ${selected ? `<div class="dispatch-product-quantity">
+          <button class="dispatch-product-quantity-button" type="button" data-action="completed-trip-adjust-load-product" data-product-id="${escapeHtml(product.id)}" data-delta="-1" aria-label="Remove one pallet of ${escapeHtml(product.brand)}" ${selected.pallet_quantity <= 1 ? "disabled" : ""}>−</button>
+          <span>${formatNumber(selected.pallet_quantity)} ${selected.pallet_quantity === 1 ? "pallet" : "pallets"}</span>
+          <button class="dispatch-product-quantity-button" type="button" data-action="completed-trip-adjust-load-product" data-product-id="${escapeHtml(product.id)}" data-delta="1" aria-label="Add one pallet of ${escapeHtml(product.brand)}">+</button>
+        </div>` : ""}
+      </article>`;
+    }).join("")}</div>`
+    : '<p class="dispatch-catalog-empty">No products match your search. Try another name or section.</p>';
+  return `<div class="dispatch-catalog-toolbar">
+    <label class="search-box dispatch-catalog-search"><span class="sr-only">Search load products</span><span aria-hidden="true">⌕</span><input type="search" name="completed_trip_load_catalog_search" placeholder="Search products or packing" value="${escapeHtml(completed.loadCatalogSearch)}" autocomplete="off" /></label>
+    <div class="dispatch-catalog-filters" role="group" aria-label="Filter load products by section">${filters}</div>
+  </div><div class="dispatch-product-results" aria-live="polite">${cards}</div>`;
+}
+
+function refreshCompletedTripCatalog(form) {
+  const catalog = form?.querySelector(".completed-trip-catalog-stage");
+  const selected = form?.querySelector(".completed-trip-selected-load");
+  if (catalog) catalog.innerHTML = completedTripCatalogMarkup();
+  if (selected) selected.innerHTML = completedTripSelectedLoadMarkup();
+}
+
+function refreshCompletedTripDestinations(form) {
+  const origin = form.elements.namedItem("origin")?.value;
+  const destination = form.elements.namedItem("destination");
+  if (!destination) return;
+  const routes = (state.data.truck_routes || []).filter((route) =>
+    route.active !== false && route.origin_code === origin,
+  );
+  const choices = [...new Map(routes.map((route) => [
+    route.destination_code,
+    { code: route.destination_code, name: route.destination_name },
+  ])).values()];
+  destination.innerHTML = `<option value="">Select destination</option>${choices.map((item) =>
+    `<option value="${escapeHtml(item.code)}">${escapeHtml(item.name)} (${escapeHtml(item.code)})</option>`,
+  ).join("")}`;
+  updateCompletedTripRouteValues(form);
+}
+
+function updateCompletedTripRouteValues(form) {
+  const origin = form.elements.namedItem("origin")?.value;
+  const destination = form.elements.namedItem("destination")?.value;
+  const route = (state.data.truck_routes || []).find((item) =>
+    item.active !== false
+      && item.origin_code === origin
+      && item.destination_code === destination,
+  );
+  const trailerPlate = form.elements.namedItem("trailer_plate")?.value;
+  const trailer = (state.data.trailers || []).find(
+    (item) => String(item.plate_number) === String(trailerPlate),
+  );
+  const capacityField = form.elements.namedItem("pallet_capacity");
+  const rateField = form.elements.namedItem("trip_rate");
+  const routeNumberField = form.elements.namedItem("route_number");
+  const fuelField = form.elements.namedItem("fuel_allocation");
+  if (capacityField) {
+    capacityField.value = trailer?.pallet_capacity == null ? "" : String(trailer.pallet_capacity);
+  }
+  if (routeNumberField) {
+    routeNumberField.value = route?.route_number == null ? "" : String(route.route_number);
+  }
+  const rate = (state.data.truck_route_rates || []).find((item) =>
+    item.origin_code === origin
+      && item.destination_code === destination
+      && Number(item.pallet_capacity) === Number(trailer?.pallet_capacity),
+  );
+  if (rateField) rateField.value = rate?.hauling_rate == null ? "" : String(rate.hauling_rate);
+  if (fuelField) {
+    fuelField.value = route?.fuel_allocation == null ? "" : String(route.fuel_allocation);
+  }
+  const quantity = form.elements.namedItem("pallet_quantity");
+  if (quantity) {
+    quantity.max = trailer?.pallet_capacity == null ? "" : String(trailer.pallet_capacity);
+    if (trailer?.pallet_capacity && Number(quantity.value) > Number(trailer.pallet_capacity)) {
+      quantity.value = String(trailer.pallet_capacity);
+    }
+  }
+}
+
 function completedTripFormMarkup() {
   const trip = state.completedTrips.records.find(
     (record) => String(record.id) === String(state.completedTrips.editingId),
   );
   const value = (key) => escapeHtml(trip?.[key] ?? "");
+  const routes = (state.data?.truck_routes || []).filter((route) => route.active !== false);
+  const options = (items, selected, getValue, getLabel, emptyLabel) => {
+    const choices = items.map((item) => ({
+      value: String(getValue(item) ?? ""),
+      label: String(getLabel(item) ?? ""),
+    }));
+    if (selected && !choices.some((item) => item.value === String(selected))) {
+      choices.push({ value: String(selected), label: `${selected} (existing trip)` });
+    }
+    return `<option value="">${emptyLabel}</option>${choices.map((item) =>
+      `<option value="${escapeHtml(item.value)}" ${item.value === String(selected || "") ? "selected" : ""}>${escapeHtml(item.label)}</option>`,
+    ).join("")}`;
+  };
+  const origins = [...new Map(routes.map((route) => [
+    route.origin_code,
+    { code: route.origin_code, name: route.origin_name },
+  ])).values()];
+  const initialOriginRoute = routes.find((route) =>
+    route.origin_name === trip?.origin || route.origin_code === trip?.origin,
+  );
+  const selectedOrigin = initialOriginRoute?.origin_code || trip?.origin || "";
+  const destinations = [...new Map(routes
+    .filter((route) => route.origin_code === selectedOrigin)
+    .map((route) => [
+      route.destination_code,
+      { code: route.destination_code, name: route.destination_name },
+    ])).values()];
+  const initialDestinationRoute = routes.find((route) =>
+    route.origin_code === selectedOrigin
+      && (route.destination_name === trip?.destination || route.destination_code === trip?.destination),
+  );
+  const selectedDestination = initialDestinationRoute?.destination_code || trip?.destination || "";
+  const selectedRoute = initialDestinationRoute;
+  const drivers = (state.data?.drivers || []).filter((driver) =>
+    driver.status === "active" || String(driver.name) === String(trip?.driver || ""),
+  );
+  const trucks = (state.data?.vehicles || []).filter((truck) =>
+    ["active", "available", "assigned"].includes(truck.status)
+      || String(truck.plate_number) === String(trip?.truck_plate || ""),
+  );
+  const trailers = (state.data?.trailers || []).filter((trailer) =>
+    trailer.status === "active"
+      || String(trailer.plate_number) === String(trip?.trailer_plate || ""),
+  );
+  const selectedTrailer = trailers.find(
+    (trailer) => String(trailer.plate_number) === String(trip?.trailer_plate || ""),
+  );
+  const selectedRouteRate = (state.data?.truck_route_rates || []).find((rate) =>
+    rate.origin_code === selectedOrigin
+      && rate.destination_code === selectedDestination
+      && Number(rate.pallet_capacity) === Number(selectedTrailer?.pallet_capacity),
+  );
+  const savedLoad = parseCompletedTripLoad(trip?.load);
+  if (trip && !state.completedTrips.loadType) {
+    state.completedTrips.loadType = savedLoad.load_type || "";
+    state.completedTrips.loadItems = savedLoad.items;
+  }
+  const loadTypes = [
+    ["FULLS", "FULLS"],
+    ["EMPTIES", "EMPTIES"],
+    ["NO_LOAD", "NO LOAD"],
+  ];
   const imageLink = (url) => url
     ? `<a href="${escapeHtml(url)}" target="_blank" rel="noopener">View image</a>`
     : `<span class="completed-trip-no-image">No image uploaded</span>`;
@@ -3984,19 +4724,22 @@ function completedTripFormMarkup() {
         <div class="dialog-fields">
           <label class="form-field"><span>ISM No *</span><input name="ism_no" maxlength="80" required value="${value("ism_no")}" /></label>
           <label class="form-field"><span>Shipment Date *</span><input name="shipment_date" type="date" required value="${value("shipment_date")}" /></label>
-          <label class="form-field"><span>Origin *</span><input name="origin" maxlength="300" required value="${value("origin")}" /></label>
-          <label class="form-field"><span>Destination *</span><input name="destination" maxlength="300" required value="${value("destination")}" /></label>
-          <label class="form-field"><span>Route No.</span><input name="route_number" type="number" min="1" step="1" value="${value("route_number")}" /></label>
-          <label class="form-field"><span>Truck Plate</span><input name="truck_plate" maxlength="100" value="${value("truck_plate")}" /></label>
-          <label class="form-field"><span>Trailer Plate</span><input name="trailer_plate" maxlength="100" value="${value("trailer_plate")}" /></label>
-          <label class="form-field"><span>Pallet Capacity</span><input name="pallet_capacity" type="number" min="1" step="1" value="${value("pallet_capacity")}" /></label>
-          <label class="form-field"><span>Trip Rate (₱)</span><input name="trip_rate" type="number" min="0" step="0.01" value="${value("trip_rate")}" /></label>
-          <label class="form-field"><span>Fuel Allocation (₱)</span><input name="fuel_allocation" type="number" min="0" step="0.01" value="${value("fuel_allocation")}" /></label>
-          <label class="form-field"><span>Actual Fuel (₱)</span><input name="actual_fuel" type="number" min="0" step="0.01" value="${value("actual_fuel")}" /></label>
+          <label class="form-field"><span>Driver *</span><select name="driver" required>${options(drivers, trip?.driver, (item) => item.name, (item) => item.name, "Select driver")}</select></label>
+          <label class="form-field"><span>Truck *</span><select name="truck_plate" required>${options(trucks, trip?.truck_plate, (item) => item.plate_number, (item) => `${item.plate_number} · ${item.make || ""} ${item.model || ""}`.trim(), "Select truck")}</select></label>
+          <label class="form-field"><span>Trailer *</span><select name="trailer_plate" required data-completed-trip-trailer>${options(trailers, trip?.trailer_plate, (item) => item.plate_number, (item) => `${item.plate_number} · ${item.pallet_capacity || "Capacity unknown"} pallets`, "Select trailer")}</select></label>
+          <label class="form-field"><span>Origin *</span><select name="origin" required data-completed-trip-origin>${options(origins, selectedOrigin, (item) => item.code, (item) => `${item.name} (${item.code})`, "Select origin")}</select></label>
+          <label class="form-field"><span>Destination *</span><select name="destination" required data-completed-trip-destination>${options(destinations, selectedDestination, (item) => item.code, (item) => `${item.name} (${item.code})`, "Select destination")}</select></label>
+          <label class="form-field"><span>Route No.</span><input name="route_number" type="number" min="1" step="1" readonly value="${escapeHtml(selectedRoute?.route_number ?? trip?.route_number ?? "")}" /></label>
+          <label class="form-field"><span>Pallet Capacity</span><input name="pallet_capacity" type="number" min="1" step="1" readonly value="${escapeHtml(selectedTrailer?.pallet_capacity ?? trip?.pallet_capacity ?? "")}" /></label>
+          <label class="form-field"><span>Trip Rate (₱)</span><input name="trip_rate" type="number" min="0" step="0.01" readonly value="${escapeHtml(selectedRouteRate?.hauling_rate ?? trip?.trip_rate ?? "")}" /></label>
+          <label class="form-field"><span>Fuel Allocation (L)</span><input name="fuel_allocation" type="number" min="0" step="0.01" value="${escapeHtml(selectedRoute?.fuel_allocation ?? trip?.fuel_allocation ?? "")}" /></label>
+          <label class="form-field"><span>Actual Fuel Expense (₱)</span><input name="actual_fuel" type="number" min="0" step="0.01" value="${value("actual_fuel")}" /></label>
           <label class="form-field"><span>Time In</span><input name="time_in" type="time" value="${escapeHtml(String(trip?.time_in || "").slice(0, 5))}" /></label>
           <label class="form-field"><span>Time Out</span><input name="time_out" type="time" value="${escapeHtml(String(trip?.time_out || "").slice(0, 5))}" /></label>
-          <label class="form-field"><span>Load</span><input name="load" maxlength="500" value="${value("load")}" /></label>
-          <label class="form-field"><span>Driver</span><input name="driver" maxlength="200" value="${value("driver")}" /></label>
+          <label class="form-field"><span>Load type *</span><select name="load_type" required data-completed-trip-load-type><option value="">Select load type</option>${loadTypes.map(([key, label]) => `<option value="${key}" ${state.completedTrips.loadType === key ? "selected" : ""}>${label}</option>`).join("")}</select></label>
+          <label class="form-field"><span>Pallet quantity *</span><input name="pallet_quantity" type="number" min="${state.completedTrips.loadType === "NO_LOAD" ? "0" : "1"}" max="${escapeHtml(selectedTrailer?.pallet_capacity ?? trip?.pallet_capacity ?? "")}" step="1" ${state.completedTrips.loadType === "NO_LOAD" ? "readonly" : ""} value="${state.completedTrips.loadType === "NO_LOAD" ? "0" : escapeHtml(savedLoad.pallet_quantity || "")}" /></label>
+          <div class="form-field completed-trip-catalog-field"><span>Load catalog</span><div class="completed-trip-catalog-stage">${completedTripCatalogMarkup()}</div><div class="completed-trip-selected-load" aria-live="polite">${completedTripSelectedLoadMarkup()}</div></div>
+          <input name="load" type="hidden" />
           <label class="form-field"><span>Trip/Fuel</span><textarea name="trip_fuel" rows="2" maxlength="5000">${value("trip_fuel")}</textarea></label>
           <label class="form-field"><span>Manifest</span><input name="manifest_image" type="file" accept="image/jpeg,image/png,image/webp" /><small class="field-hint">JPG, PNG, or WEBP, up to 10 MB. ${imageLink(trip?.manifest_url, "manifest")}</small></label>
           <label class="form-field"><span>Fuel Receipt</span><input name="fuel_receipt_image" type="file" accept="image/jpeg,image/png,image/webp" /><small class="field-hint">JPG, PNG, or WEBP, up to 10 MB. ${imageLink(trip?.fuel_receipt_url, "receipt")}</small></label>
@@ -4025,7 +4768,7 @@ function completedTripDetailsMarkup(trip) {
     ["Actual fuel", trip.actual_fuel == null ? null : formatCurrency(trip.actual_fuel)],
     ["Time in", trip.time_in],
     ["Time out", trip.time_out],
-    ["Load", trip.load],
+    ["Load", completedTripLoadLabel(trip.load)],
     ["Driver", trip.driver],
     ["Trip/Fuel", trip.trip_fuel],
   ];
@@ -4034,6 +4777,13 @@ function completedTripDetailsMarkup(trip) {
 }
 
 function renderCompletedTrips() {
+  if (
+    !state.dispatch.loadCatalogLoaded
+    && !state.dispatch.loadCatalogLoading
+    && !state.dispatch.loadCatalogError
+  ) {
+    loadDispatchLoadCatalog();
+  }
   const trips = state.completedTrips.records;
   const rows = trips.map((trip) => `
     <tr>
@@ -4050,7 +4800,7 @@ function renderCompletedTrips() {
       <td>${trip.actual_fuel == null ? "—" : escapeHtml(formatCurrency(trip.actual_fuel))}</td>
       <td>${escapeHtml(trip.time_in || "—")}</td>
       <td>${escapeHtml(trip.time_out || "—")}</td>
-      <td>${escapeHtml(trip.load || "—")}</td>
+      <td>${escapeHtml(completedTripLoadLabel(trip.load))}</td>
       <td>${escapeHtml(trip.driver || "—")}</td>
       <td>${escapeHtml(trip.trip_fuel || "—")}</td>
       <td>${trip.manifest_url ? `<a href="${escapeHtml(trip.manifest_url)}" target="_blank" rel="noopener">View image</a>` : "—"}</td>
@@ -4066,9 +4816,22 @@ function renderCompletedTrips() {
       <div><p class="eyebrow">PRIVATE TRIP HISTORY</p><h1>Completed Trips</h1>
         <p class="page-description">Record and manage completed trips using the fleet trip record format.</p>
       </div>
-      <button class="button button-primary" data-action="completed-trip-add" type="button">Add a Completed Trip</button>
+      <div class="page-heading-actions">
+        <button class="button button-secondary" data-action="completed-trip-move-all" type="button" ${state.completedTrips.movingAll ? "disabled" : ""}>${state.completedTrips.movingAll ? "Moving trips…" : "Move all to Public Trips"}</button>
+        <button class="button button-primary" data-action="completed-trip-add" type="button">Add a Completed Trip</button>
+      </div>
     </div>
     ${state.completedTrips.formOpen ? completedTripFormMarkup() : ""}
+    ${state.completedTrips.transferResults.length ? `<section class="panel completed-trip-transfer-results" role="status"><strong>Transfer results</strong><ul>${state.completedTrips.transferResults.map((result) => {
+      const source = trips.find((trip) => String(trip.id) === String(result.completed_trip_id));
+      const label = result.ism_no || source?.ism_no || `completed trip #${result.completed_trip_id}`;
+      const reopened = (result.reopened_payroll_periods || []).map(
+        (period) => `${period.start_date}–${period.end_date}`,
+      );
+      return `<li>${result.status === "moved"
+        ? `Moved ${escapeHtml(label)} to Public Trip #${escapeHtml(result.public_trip_id)}.${reopened.length ? ` Reopened payroll period${reopened.length > 1 ? "s" : ""} ${escapeHtml(reopened.join(", "))}; review and finalize payroll again.` : ""}`
+        : `Could not move ${escapeHtml(label)}: ${escapeHtml(result.error || "Unknown error")}`}</li>`;
+    }).join("")}</ul></section>` : ""}
     <section class="panel completed-trip-list-panel">
       <div class="panel-heading"><div><p class="eyebrow">YOUR RECORDS</p><h2>Saved completed trips</h2></div>
         <span class="record-count">${state.completedTrips.loading ? "Loading…" : `${formatNumber(trips.length)} trips`}</span>
@@ -4147,6 +4910,61 @@ async function loadCompletedTrips(force = false) {
   }
 }
 
+async function moveAllCompletedTripsToPublicTrips(button) {
+  const completed = state.completedTrips;
+  if (completed.movingAll) return;
+  if (!window.confirm(
+    "Move all saved completed trips to Public Trips? " +
+    "Trips that transfer successfully will be removed from Completed Trips. " +
+    "Trips that fail validation will remain here.",
+  )) return;
+
+  completed.movingAll = true;
+  completed.transferResults = [];
+  button.disabled = true;
+  render();
+  try {
+    const response = await api("/api/completed-trips/move-to-trips", {
+      method: "POST",
+    });
+    completed.transferResults = response.data?.results || [];
+    completed.requestedKey = "";
+    if (
+      response.data?.moved_count
+      || response.data?.reopened_payroll_periods?.length
+    ) invalidatePayrollReport();
+    await loadCompletedTrips(true);
+    if (response.data?.failed_count) {
+      showToast(
+        `Moved ${response.data.moved_count} trip(s); ${response.data.failed_count} ` +
+        "could not be moved. Review the transfer results.",
+        "error",
+      );
+    } else {
+      const reopenedCount = response.data?.reopened_payroll_periods?.length || 0;
+      showToast(
+        response.data?.moved_count
+          ? `Moved ${response.data.moved_count} trip(s) to Public Trips.${
+            reopenedCount
+              ? ` Reopened ${reopenedCount} finalized payroll period(s); review and finalize payroll again.`
+              : ""
+          }`
+          : reopenedCount
+            ? `Reopened ${reopenedCount} finalized payroll period(s) for previously transferred trips; review and finalize payroll again.`
+            : "There are no completed trips to move.",
+      );
+    }
+  } catch (error) {
+    const message = error.message === "Not found" || error.message?.includes("(404)")
+      ? "The running Flask server does not have the trip-transfer endpoint yet. Restart app.py from this project folder, then refresh the page and retry."
+      : error.message || "Could not move completed trips.";
+    showToast(message, "error");
+  } finally {
+    completed.movingAll = false;
+    render();
+  }
+}
+
 async function submitCompletedTripForm(form) {
   if (!form.reportValidity()) return;
   const errorElement = form.querySelector(".completed-trip-form-error");
@@ -4161,6 +4979,59 @@ async function submitCompletedTripForm(form) {
   submitButton.disabled = true;
   errorElement.hidden = true;
   try {
+    const loadType = String(form.elements.namedItem("load_type").value || "");
+    const palletQuantity = loadType === "NO_LOAD"
+      ? 0
+      : Number(form.elements.namedItem("pallet_quantity").value);
+    const trailerCapacity = Number(form.elements.namedItem("pallet_capacity").value);
+    if (!["FULLS", "EMPTIES", "NO_LOAD"].includes(loadType)) {
+      throw new Error("Select a load type.");
+    }
+    if (!Number.isInteger(palletQuantity) || palletQuantity < 0) {
+      throw new Error("Enter a valid pallet quantity.");
+    }
+    if (loadType !== "NO_LOAD" && palletQuantity < 1) {
+      throw new Error("Pallet quantity must be at least one.");
+    }
+    if (Number.isFinite(trailerCapacity) && trailerCapacity > 0
+        && palletQuantity > trailerCapacity) {
+      throw new Error(`Pallet quantity cannot exceed this trailer's capacity of ${trailerCapacity}.`);
+    }
+    const loadItems = loadType === "FULLS" ? tripState.loadItems : [];
+    if (loadType === "FULLS" && !loadItems.length) {
+      throw new Error("Select at least one product from the load catalog.");
+    }
+    payload.pallet_quantity = palletQuantity;
+    payload.load = `CATALOG:${JSON.stringify({
+      load_type: loadType,
+      pallet_quantity: palletQuantity,
+      items: loadItems,
+    })}`;
+    if (payload.load.length > 20_000) {
+      throw new Error("The selected load is too large to save. Remove some catalog products.");
+    }
+    const originCode = form.elements.namedItem("origin").value;
+    const destinationCode = form.elements.namedItem("destination").value;
+    const selectedRoute = (state.data?.truck_routes || []).find((route) =>
+      route.active !== false
+        && route.origin_code === originCode
+        && route.destination_code === destinationCode,
+    );
+    if (selectedRoute) {
+      payload.origin = selectedRoute.origin_name;
+      payload.destination = selectedRoute.destination_name;
+      payload.route_number = selectedRoute.route_number ?? payload.route_number;
+    } else {
+      const currentTrip = tripState.records.find(
+        (trip) => String(trip.id) === String(tripState.editingId),
+      );
+      payload.origin = currentTrip?.origin
+        || form.elements.namedItem("origin").selectedOptions[0]?.textContent
+        || originCode;
+      payload.destination = currentTrip?.destination
+        || form.elements.namedItem("destination").selectedOptions[0]?.textContent
+        || destinationCode;
+    }
     const response = await api(
       editing
         ? `/api/completed-trips/${encodeURIComponent(tripState.editingId)}`
@@ -4189,6 +5060,8 @@ async function submitCompletedTripForm(form) {
       }
     }
     tripState.editingId = null;
+    tripState.loadType = "";
+    tripState.loadItems = [];
     tripState.formOpen = false;
     tripState.formError = "";
     tripState.requestedKey = "";
@@ -4282,7 +5155,12 @@ function renderResource(page) {
   }
   if (page === "fuel") {
     return `
-      ${header("FLEET DATA", config.title, "Review previously recorded fuel logs.")}
+      ${header(
+        "FLEET DATA",
+        config.title,
+        "Review previously recorded fuel logs.",
+        '<button class="button button-secondary" data-action="fuel-export" type="button">Export Excel</button>',
+      )}
       <section class="panel records-panel">
         <div class="panel-heading records-heading">
           <div><p class="eyebrow">RECORDS</p><h2>${escapeHtml(config.title)}</h2></div>
@@ -4395,6 +5273,12 @@ function payrollRows() {
     && (!filters.origin || trip.origin === filters.origin)
     && (!filters.destination || trip.destination === filters.destination),
   );
+}
+
+function invalidatePayrollReport() {
+  state.payroll = null;
+  state.payrollKey = "";
+  state.payrollRequestedKey = "";
 }
 
 function sumCurrency(rows, field) {
@@ -4952,7 +5836,7 @@ function renderPayroll() {
     <div class="payroll-page">
     ${header("FINANCE", "Payroll", "Review route-based earnings, advances, overdrafts, and driver payroll.", '<button class="button button-secondary" data-action="payroll-export" type="button">Export Excel</button>')}
     <section class="panel payroll-period-bar payroll-section payroll-period-details">
-      <div class="panel-heading"><div><p class="eyebrow">PAY PERIOD</p><h2>Employee &amp; pay period details</h2></div><span class="badge badge-${escapeHtml(status)}">${escapeHtml(status)}</span></div>
+      <div class="panel-heading"><div><p class="eyebrow">PAY PERIOD</p><h2>Employee &amp; pay period details</h2></div><div class="page-heading-actions"><span class="badge badge-${escapeHtml(status)}">${escapeHtml(status)}</span>${status === "finalized" && report?.period?.id ? '<button class="button button-secondary" data-action="payroll-reopen" type="button">Reopen for regeneration</button>' : ""}</div></div>
       <form id="payroll-period-form" class="payroll-toolbar">
         <label class="form-field"><span>Period start</span><input name="start_date" type="date" value="${escapeHtml(startDate)}" required /></label>
         <label class="form-field"><span>Period end</span><input name="end_date" type="date" value="${escapeHtml(endDate)}" required /></label>
@@ -5033,6 +5917,7 @@ function settingsSectionNavigation() {
     ["drivers", "Drivers"],
     ["assignments", "Assignments"],
     ["dispatch", "Dispatch access"],
+    ["duplicate-trips", "Duplicate trips"],
   ];
   return `<nav class="settings-section-tabs" aria-label="Settings sections">
     ${sections.map(([key, label]) => `
@@ -5157,9 +6042,11 @@ function renderSettings() {
       : state.dispatch.loaded
         ? dispatchAdminSetup()
         : '<section class="panel"><p>Loading dispatch configuration…</p></section>';
+  } else if (state.settings.section === "duplicate-trips") {
+    content = renderDuplicateTripSettings();
   }
   return `
-    ${header("ADMINISTRATION", "Settings", "Adjust financial rates and manage fleet and dispatch configuration.")}
+    ${header("ADMINISTRATION", "Settings", "Manage fleet operations, configuration, and data cleanup.")}
     ${settingsSectionNavigation()}
     <div class="settings-content">${content}</div>`;
 }
@@ -5261,6 +6148,11 @@ function render() {
     location.hash = "dashboard";
     state.page = "dashboard";
   }
+  if (state.page === "trip-reports" && !isAdministrator) {
+    location.hash = "dashboard";
+    state.page = "dashboard";
+    showToast("Trip reports are only available to administrators.", "error");
+  }
   syncCompletedTripsNavigation();
   document.querySelectorAll(".nav-link").forEach((link) => {
     link.hidden = (isDispatcher && link.dataset.page && !dispatcherPages.has(link.dataset.page))
@@ -5299,6 +6191,7 @@ function render() {
       ? renderDashboard()
       : state.page === "payroll" ? renderPayroll()
         : state.page === "revenue" ? revenueDashboardMarkup(state.revenue.report)
+            : state.page === "trip-reports" ? renderTripReports()
             : state.page === "trip-records" ? renderTripRecords()
                 : state.page === "completed-trips" ? renderCompletedTrips()
                     : state.page === "settings" ? renderSettings()
@@ -6170,7 +7063,28 @@ async function payrollWorkflowAction(action) {
   const button = view.querySelector(`[data-action="${action}"]`);
   if (button) button.disabled = true;
   try {
-    if (action === "payroll-review") {
+    if (action === "payroll-reopen") {
+      const periodId = state.payroll?.period?.id;
+      if (!periodId) {
+        throw new Error("The finalized payroll period could not be identified.");
+      }
+      if (!window.confirm(
+        "Reopen this finalized payroll period for regeneration? " +
+        "This removes its saved payroll snapshot and generated overdraft settlements. " +
+        "Cash advances and other overdraft entries are kept.",
+      )) {
+        if (button?.isConnected) button.disabled = false;
+        return;
+      }
+      await api("/api/payroll/reopen", {
+        method: "POST",
+        body: JSON.stringify({ period_id: periodId }),
+      });
+      invalidatePayrollReport();
+      await reloadPayroll();
+      showToast("Payroll reopened. Review the refreshed trips, then review and finalize payroll again.");
+      return;
+    } else if (action === "payroll-review") {
       state.payroll = await api("/api/payroll/review", {
         method: "POST",
         body: JSON.stringify({ start_date: startDate, end_date: endDate }),
@@ -6266,6 +7180,37 @@ async function exportTripHistory() {
     showToast(error.message || "Could not export trip history.", "error");
   } finally {
     if (button.isConnected) button.disabled = false;
+  }
+}
+
+async function exportFuelLogs() {
+  const button = view.querySelector('[data-action="fuel-export"]');
+  if (button) button.disabled = true;
+  try {
+    const params = new URLSearchParams();
+    if (state.search.trim()) params.set("search", state.search.trim());
+    const query = params.toString();
+    const response = await fetch(`/api/export/fuel${query ? `?${query}` : ""}`, {
+      cache: "no-store",
+    });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        returnToSignIn(payload.error?.toLowerCase().includes("inactivity"));
+      }
+      throw new Error(payload.error || `Fuel log export failed (${response.status}).`);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "fuel_logs.xlsx";
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    showToast(error.message || "Could not export fuel logs.", "error");
+  } finally {
+    if (button?.isConnected) button.disabled = false;
   }
 }
 
@@ -6403,6 +7348,18 @@ view.addEventListener("submit", (event) => {
 });
 
 view.addEventListener("input", (event) => {
+  const completedTripForm = event.target.closest(".completed-trip-form");
+  if (completedTripForm && event.target.name === "completed_trip_load_catalog_search") {
+    const position = event.target.selectionStart;
+    state.completedTrips.loadCatalogSearch = event.target.value;
+    refreshCompletedTripCatalog(completedTripForm);
+    const searchInput = completedTripForm.querySelector(
+      '[name="completed_trip_load_catalog_search"]',
+    );
+    searchInput?.focus();
+    searchInput?.setSelectionRange(position, position);
+    return;
+  }
   const dispatchForm = event.target.closest(".dispatch-departure-form");
   if (dispatchForm) {
     const stateFields = {
@@ -6516,6 +7473,13 @@ view.addEventListener("input", (event) => {
     }, 180);
     return;
   }
+  const reportSearch = event.target.closest('[data-trip-report-filter="search"]');
+  if (reportSearch) {
+    const report = state.tripReport;
+    report.search = reportSearch.value;
+    markTripReportDirty();
+    return;
+  }
   if (event.target.id !== "record-search") return;
   const position = event.target.selectionStart;
   const restoreFocus = document.activeElement === event.target;
@@ -6531,6 +7495,12 @@ view.addEventListener("input", (event) => {
 });
 
 view.addEventListener("click", async (event) => {
+  const openedReportDropdown = event.target.closest(".trip-report-dropdown[open]");
+  if (openedReportDropdown?.querySelector("summary") === event.target.closest("summary")) {
+    view.querySelectorAll(".trip-report-dropdown[open]").forEach((dropdown) => {
+      if (dropdown !== openedReportDropdown) dropdown.open = false;
+    });
+  }
   const button = event.target.closest("[data-action]");
   if (!button) return;
   if (button.dataset.action === "settings-section") {
@@ -6548,14 +7518,20 @@ view.addEventListener("click", async (event) => {
   }
   if (button.dataset.action === "completed-trip-add") {
     state.completedTrips.editingId = null;
+    state.completedTrips.loadType = "";
+    state.completedTrips.loadItems = [];
+    state.completedTrips.loadCatalogSearch = "";
+    state.completedTrips.loadCatalogSection = "";
     state.completedTrips.formError = "";
     state.completedTrips.formOpen = true;
     render();
-    view.querySelector(".completed-trip-form input[name='title']")?.focus();
+    view.querySelector(".completed-trip-form input[name='ism_no']")?.focus();
     return;
   }
   if (button.dataset.action === "completed-trip-cancel") {
     state.completedTrips.editingId = null;
+    state.completedTrips.loadType = "";
+    state.completedTrips.loadItems = [];
     state.completedTrips.formError = "";
     state.completedTrips.formOpen = false;
     render();
@@ -6571,10 +7547,18 @@ view.addEventListener("click", async (event) => {
   }
   if (button.dataset.action === "completed-trip-edit") {
     state.completedTrips.editingId = button.dataset.id;
+    const trip = state.completedTrips.records.find(
+      (record) => String(record.id) === String(button.dataset.id),
+    );
+    const savedLoad = parseCompletedTripLoad(trip?.load);
+    state.completedTrips.loadType = savedLoad.load_type || "";
+    state.completedTrips.loadItems = savedLoad.items;
+    state.completedTrips.loadCatalogSearch = "";
+    state.completedTrips.loadCatalogSection = "";
     state.completedTrips.formError = "";
     state.completedTrips.formOpen = true;
     render();
-    view.querySelector(".completed-trip-form input[name='title']")?.focus();
+    view.querySelector(".completed-trip-form input[name='ism_no']")?.focus();
     return;
   }
   if (button.dataset.action === "completed-trip-delete") {
@@ -6601,10 +7585,118 @@ view.addEventListener("click", async (event) => {
     loadCompletedTrips(true);
     return;
   }
+  if (button.dataset.action === "completed-trip-move-all") {
+    await moveAllCompletedTripsToPublicTrips(button);
+    return;
+  }
+  if (button.dataset.action === "completed-trip-load-section") {
+    state.completedTrips.loadCatalogSection = button.dataset.section || "";
+    refreshCompletedTripCatalog(button.closest(".completed-trip-form"));
+    return;
+  }
+  if (button.dataset.action === "completed-trip-select-load-product"
+      || button.dataset.action === "completed-trip-adjust-load-product"
+      || button.dataset.action === "completed-trip-remove-load-product") {
+    const form = button.closest(".completed-trip-form");
+    const completed = state.completedTrips;
+    const productId = Number(button.dataset.productId);
+    const existingIndex = completed.loadItems.findIndex(
+      (item) => Number(item.product_id) === productId,
+    );
+    if (button.dataset.action === "completed-trip-remove-load-product") {
+      if (existingIndex >= 0) completed.loadItems.splice(existingIndex, 1);
+    } else if (button.dataset.action === "completed-trip-adjust-load-product") {
+      if (existingIndex >= 0) {
+        const nextQuantity = completed.loadItems[existingIndex].pallet_quantity
+          + Number(button.dataset.delta || 0);
+        if (nextQuantity > 0) {
+          completed.loadItems[existingIndex].pallet_quantity = nextQuantity;
+        }
+      }
+    } else if (existingIndex < 0) {
+      completed.loadItems.push({ product_id: productId, pallet_quantity: 1 });
+    } else {
+      completed.loadItems.splice(existingIndex, 1);
+    }
+    refreshCompletedTripCatalog(form);
+    return;
+  }
+  if (button.dataset.action === "dispatch-load-catalog-retry") {
+    state.dispatch.loadCatalogLoaded = false;
+    state.dispatch.loadCatalogError = "";
+    loadDispatchLoadCatalog({ force: true });
+    const dispatchForm = button.closest(".dispatch-departure-form");
+    if (dispatchForm) refreshDispatchCatalogStage(dispatchForm);
+    const completedForm = button.closest(".completed-trip-form");
+    if (completedForm) refreshCompletedTripCatalog(completedForm);
+    return;
+  }
   if (button.dataset.action === "trip-record-page") {
     state.tripRecords.page = Number(button.dataset.page) || 1;
     state.tripRecords.requestedKey = "";
     render();
+    return;
+  }
+  if (button.dataset.action === "trip-report-apply") {
+    state.tripReport.page = 1;
+    state.tripReport.requestKey = "";
+    loadTripReportPreview({ force: true });
+    return;
+  }
+  if (button.dataset.action === "trip-report-clear") {
+    const report = state.tripReport;
+    report.report_type = "all";
+    report.date_from = "";
+    report.date_to = "";
+    report.driver_ids = [];
+    report.truck_ids = [];
+    report.trailer_ids = [];
+    report.origins = [];
+    report.destinations = [];
+    report.routes = [];
+    report.statuses = [];
+    report.search = "";
+    report.page = 1;
+    report.requestKey = "";
+    report.filtersDirty = true;
+    report.total = 0;
+    report.records = [];
+    report.summary = null;
+    releaseTripReportPdf();
+    loadTripReportPreview({ force: true });
+    return;
+  }
+  if (button.dataset.action === "trip-report-page") {
+    state.tripReport.page = Number(button.dataset.page) || 1;
+    state.tripReport.requestKey = "";
+    loadTripReportPreview({ force: true });
+    return;
+  }
+  if (button.dataset.action === "trip-report-generate-pdf") {
+    await downloadTripReport("pdf");
+    return;
+  }
+  if (button.dataset.action === "trip-report-excel") {
+    await downloadTripReport("excel");
+    return;
+  }
+  if (button.dataset.action === "trip-report-print") {
+    const report = state.tripReport;
+    const printWindow = report.generatedPdfUrl ? window.open(report.generatedPdfUrl, "_blank") : null;
+    if (!printWindow) {
+      showToast("Allow pop-ups to open the generated PDF for printing.", "error");
+    } else {
+      window.setTimeout(() => {
+        printWindow.focus();
+        printWindow.print();
+      }, 700);
+    }
+    return;
+  }
+  if (button.dataset.action === "trip-report-options-retry") {
+    state.tripReport.options = null;
+    state.tripReport.optionsAttempted = false;
+    loadTripReportOptions({ force: true });
     return;
   }
   if (button.dataset.action === "trip-record-sort") {
@@ -6624,6 +7716,32 @@ view.addEventListener("click", async (event) => {
   if (button.dataset.action === "trip-record-retry") {
     state.tripRecords.requestedKey = "";
     loadTripRecords({ force: true });
+    return;
+  }
+  if (button.dataset.action === "trip-duplicates-scan") {
+    scanTripDuplicates();
+    return;
+  }
+  if (button.dataset.action === "trip-duplicate-delete") {
+    const scan = state.tripRecords.duplicateScan;
+    const group = scan.groups.find((item) => item.key === button.dataset.groupKey);
+    const trip = group?.trips.find((item) => String(item.id) === button.dataset.tripId);
+    const keeperId = scan.keepers[button.dataset.groupKey];
+    if (!group || !trip || !keeperId || String(keeperId) === String(trip.id)) return;
+    if (!window.confirm(
+      `Delete trip #${trip.id} with ISM ${group.ism_no}? The selected trip #${keeperId} will be kept.`,
+    )) return;
+    button.disabled = true;
+    try {
+      await api(`/api/trips/${encodeURIComponent(trip.id)}`, { method: "DELETE" });
+      showToast(`Trip #${trip.id} deleted; trip #${keeperId} was kept.`, "success");
+      state.tripRecords.requestedKey = "";
+      loadTripRecords({ force: true });
+      scanTripDuplicates();
+    } catch (error) {
+      showToast(error.message || `Could not delete trip #${trip.id}.`, "error");
+      button.disabled = false;
+    }
     return;
   }
   if (button.dataset.action === "close-trip-record-detail") {
@@ -6714,14 +7832,6 @@ view.addEventListener("click", async (event) => {
       (item) => Number(item.product_id) !== Number(button.dataset.productId),
     );
     if (form) renderDispatchLoadSelection(form);
-    return;
-  }
-  if (button.dataset.action === "dispatch-load-catalog-retry") {
-    const form = button.closest(".dispatch-departure-form");
-    state.dispatch.loadCatalogLoaded = false;
-    state.dispatch.loadCatalogError = "";
-    loadDispatchLoadCatalog({ force: true });
-    refreshDispatchCatalogStage(form);
     return;
   }
   if (button.dataset.action === "dispatch-page") {
@@ -6867,6 +7977,17 @@ view.addEventListener("click", async (event) => {
     deleteTrailerFromDetails();
     return;
   }
+  if (button.dataset.action === "edit-trip-record") {
+    openTripDetails(button.dataset.id);
+    const content = view.querySelector(".trip-details-content");
+    const form = content?.querySelector(".trip-edit-form");
+    if (form) {
+      form.hidden = false;
+      content.querySelector('[data-action="edit-trip"]').hidden = true;
+      form.querySelector("input, select, textarea")?.focus();
+    }
+    return;
+  }
   if (button.dataset.action === "trip-details") {
     if (event.target.closest("a, button, input")) return;
     openTripDetails(button.dataset.id);
@@ -6919,16 +8040,29 @@ view.addEventListener("click", async (event) => {
     render();
     return;
   }
-  if (button.dataset.action === "retry" || button.dataset.action === "refresh") loadData();
+  if (button.dataset.action === "retry" || button.dataset.action === "refresh") {
+    if (button.dataset.action === "refresh" && state.page === "payroll") {
+      invalidatePayrollReport();
+      render();
+      loadData({ force: true });
+    } else {
+      loadData();
+    }
+  }
   if (button.dataset.action === "payroll-reload") {
     state.payrollRequestedKey = "";
     render();
   }
-  if (button.dataset.action === "payroll-review" || button.dataset.action === "payroll-finalize") {
+  if (
+    button.dataset.action === "payroll-review"
+    || button.dataset.action === "payroll-finalize"
+    || button.dataset.action === "payroll-reopen"
+  ) {
     payrollWorkflowAction(button.dataset.action);
   }
   if (button.dataset.action === "payroll-export") exportPayrollReport();
   if (button.dataset.action === "trip-export") exportTripHistory();
+  if (button.dataset.action === "fuel-export") exportFuelLogs();
   if (button.dataset.action === "trip-group") {
     state.tripsGroupBy = button.dataset.groupBy || "";
     render();
@@ -7069,6 +8203,30 @@ view.addEventListener("change", (event) => {
   if (event.target.matches("#tire-record-asset-type")) {
     updateTireAssetOptions(event.target.form);
   }
+  const completedTripForm = event.target.closest(".completed-trip-form");
+  if (completedTripForm) {
+    const completed = state.completedTrips;
+    if (event.target.name === "origin") {
+      refreshCompletedTripDestinations(completedTripForm);
+    } else if (event.target.name === "destination") {
+      updateCompletedTripRouteValues(completedTripForm);
+    } else if (event.target.name === "trailer_plate") {
+      updateCompletedTripRouteValues(completedTripForm);
+    } else if (event.target.name === "load_type") {
+      completed.loadType = event.target.value;
+      const quantity = completedTripForm.elements.namedItem("pallet_quantity");
+      if (quantity) {
+        const noLoad = event.target.value === "NO_LOAD";
+        quantity.value = noLoad ? "0" : quantity.value === "0" ? "" : quantity.value;
+        quantity.min = noLoad ? "0" : "1";
+        quantity.readOnly = noLoad;
+      }
+      const loadField = completedTripForm.querySelector(".completed-trip-selected-load");
+      if (loadField) loadField.innerHTML = completedTripSelectedLoadMarkup();
+      refreshCompletedTripCatalog(completedTripForm);
+    }
+    return;
+  }
   if (event.target.matches("[data-dispatch-origin]")) {
     state.dispatch.departureOrigin = event.target.value;
     state.dispatch.departureDestination = "";
@@ -7184,6 +8342,41 @@ view.addEventListener("keydown", (event) => {
 });
 
 view.addEventListener("change", (event) => {
+  const duplicateKeep = event.target.closest("[data-trip-duplicate-keep]");
+  if (duplicateKeep) {
+    state.tripRecords.duplicateScan.keepers[duplicateKeep.dataset.tripDuplicateKeep] =
+      duplicateKeep.value;
+    render();
+    return;
+  }
+  const tripReportFilter = event.target.closest("[data-trip-report-filter]");
+  if (tripReportFilter) {
+    const report = state.tripReport;
+    const key = tripReportFilter.dataset.tripReportFilter;
+    const multiKeys = new Set([
+      "driver_ids", "truck_ids", "trailer_ids", "origins", "destinations", "routes", "statuses",
+    ]);
+    if (multiKeys.has(key)) {
+      report[key] = Array.from(
+        view.querySelectorAll(`[data-trip-report-filter="${key}"]:checked`),
+        (checkbox) => checkbox.value,
+      );
+      const dropdown = tripReportFilter.closest(".trip-report-dropdown");
+      const summaryValue = dropdown?.querySelector(`[data-trip-report-dropdown-value="${key}"]`);
+      if (summaryValue) {
+        summaryValue.textContent = report[key].length
+          ? `${report[key].length} selected`
+          : `All ${dropdown.querySelector(".trip-report-dropdown-summary > span").textContent.toLowerCase()}`;
+      }
+    } else if (key === "page_size") {
+      report.page_size = Number(tripReportFilter.value);
+      report.page = 1;
+    } else if (key in report) {
+      report[key] = tripReportFilter.value;
+    }
+    markTripReportDirty();
+    return;
+  }
   const tripRecordFilter = event.target.closest("[data-trip-record-filter]");
   if (tripRecordFilter) {
     const key = tripRecordFilter.dataset.tripRecordFilter;

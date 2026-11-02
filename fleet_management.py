@@ -910,6 +910,7 @@ class FleetManager:
         fuel_remarks: Optional[str] = None,
         fuel_invoice_object_path: Optional[str] = None,
         create_fuel_log: bool = False,
+        completed_trip_id: Optional[int] = None,
     ) -> Dict[str, Any]:
         if not self._exists("vehicles", vehicle_id):
             raise TripRateValidationError(f"Truck {vehicle_id} not found")
@@ -941,6 +942,11 @@ class FleetManager:
                 "trip_date": trip_date or datetime.now().date().isoformat(),
                 "notes": notes,
                 "ism_no": ism_no.strip() if ism_no else None,
+                **(
+                    {"completed_trip_id": completed_trip_id}
+                    if completed_trip_id is not None
+                    else {}
+                ),
                 "shipment_date": shipment_date or trip_date or datetime.now().date().isoformat(),
                 "time_in": time_in or None,
                 "time_out": time_out or None,
@@ -1723,14 +1729,21 @@ class FleetManager:
     def dashboard(self, user_id: Optional[str] = None) -> Dict[str, Any]:
         vehicles = self._list("vehicles", select="status")
         drivers = self._list("drivers", select="status")
-        fuel_logs = self._filter_owned_rows(self._list("fuel_logs", select="total_cost"), user_id)
+        fuel_logs = self._filter_owned_rows(
+            self._list("fuel_logs", select="total_cost,actual_expense"),
+            user_id,
+        )
         maintenance = self._filter_owned_rows(self._list("maintenance", select="cost"), user_id)
         trips = self._filter_owned_rows(self._list("trips", select="id"), user_id)
         return {
             "total_vehicles": len(vehicles),
             "active_drivers": sum(driver["status"] == "active" for driver in drivers),
             "assigned_vehicles": sum(vehicle["status"] == "assigned" for vehicle in vehicles),
-            "total_fuel_spend": sum(float(item["total_cost"]) for item in fuel_logs),
+            "total_fuel_spend": sum(
+                float(item["actual_expense"] if item.get("actual_expense") is not None
+                      else item.get("total_cost") or 0)
+                for item in fuel_logs
+            ),
             "total_maintenance": sum(float(item["cost"]) for item in maintenance),
             "recent_trips": len(trips),
         }
