@@ -35,8 +35,9 @@ by default, and remembers the selected theme in the browser.
 
 ## Private completed trips
 
-After creating and verifying the `sceratoconcepts@gmail.com` user in Supabase
-Authentication, run
+After creating and verifying one of the authorized admin users
+(`sceratoconcepts@gmail.com`, `besaneszyxa1984@gmail.com`, or
+`glfsadmin@glfs.org`) in Supabase Authentication, run
 [`supabase_payroll_migration.sql`](./Sql%20snippets/supabase_payroll_migration.sql)
 first if payroll has not already been set up, then run
 [`supabase_completed_trips_migration.sql`](./Sql%20snippets/supabase_completed_trips_migration.sql)

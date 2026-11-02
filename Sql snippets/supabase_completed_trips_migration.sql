@@ -16,12 +16,23 @@ declare
 begin
     select id into intended_user_id
     from auth.users
-    where lower(btrim(email)) = 'sceratoconcepts@gmail.com'
-      and email_confirmed_at is not null;
+    where lower(btrim(email)) in (
+        'sceratoconcepts@gmail.com',
+        'besaneszyxa1984@gmail.com',
+        'glfsadmin@glfs.org'
+    )
+      and email_confirmed_at is not null
+    order by case lower(btrim(email))
+        when 'sceratoconcepts@gmail.com' then 1
+        when 'besaneszyxa1984@gmail.com' then 2
+        when 'glfsadmin@glfs.org' then 3
+        else 4
+    end
+    limit 1;
 
     if intended_user_id is null then
         raise exception
-            'Create and verify the sceratoconcepts@gmail.com Supabase account before applying this migration';
+            'Create and verify one of the authorized Supabase admin accounts before applying this migration';
     end if;
 
     insert into public.completed_trip_access (singleton, user_id)
@@ -56,7 +67,11 @@ as $$
            select 1
            from auth.users as auth_user
            where auth_user.id = auth.uid()
-             and lower(btrim(auth_user.email)) = 'sceratoconcepts@gmail.com'
+             and lower(btrim(auth_user.email)) in (
+                 'sceratoconcepts@gmail.com',
+                 'besaneszyxa1984@gmail.com',
+                 'glfsadmin@glfs.org'
+             )
              and auth_user.email_confirmed_at is not null
        );
 $$;

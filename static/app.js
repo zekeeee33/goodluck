@@ -244,6 +244,11 @@ const state = {
   data: null,
   page: "dashboard",
   search: "",
+  dashboard: {
+    range: "month",
+    customStart: "",
+    customEnd: "",
+  },
   csrfToken: "",
   notifications: [],
   unreadNotifications: 0,
@@ -1034,22 +1039,188 @@ function panel(title, content, link = "") {
     </section>`;
 }
 
+function getDashboardDateRange(rangeKey = state.dashboard.range || "month", customStart = state.dashboard.customStart, customEnd = state.dashboard.customEnd) {
+  const end = new Date();
+  end.setHours(23, 59, 59, 999);
+  const start = new Date(end);
+
+  if (rangeKey === "custom") {
+    const hasCustomStart = typeof customStart === "string" && customStart.trim();
+    const hasCustomEnd = typeof customEnd === "string" && customEnd.trim();
+    if (hasCustomStart || hasCustomEnd) {
+      const from = hasCustomStart ? new Date(`${customStart}T00:00:00`) : new Date(end);
+      const to = hasCustomEnd ? new Date(`${customEnd}T23:59:59`) : new Date(end);
+      if (!Number.isNaN(from.getTime()) && !Number.isNaN(to.getTime())) {
+        return { start: from, end: to, label: `${from.toLocaleDateString("en-CA")} – ${to.toLocaleDateString("en-CA")}` };
+      }
+    }
+  }
+
+  if (rangeKey === "today") {
+    start.setHours(0, 0, 0, 0);
+    return { start, end, label: "Today" };
+  }
+
+  if (rangeKey === "week") {
+    start.setDate(end.getDate() - 6);
+    start.setHours(0, 0, 0, 0);
+    return { start, end, label: "This week" };
+  }
+
+  if (rangeKey === "custom") {
+    start.setDate(1);
+    start.setHours(0, 0, 0, 0);
+    return { start, end, label: "Custom range" };
+  }
+
+  start.setDate(1);
+  start.setHours(0, 0, 0, 0);
+  return { start, end, label: "This month" };
+}
+
+function dashboardRowMatchesRange(row, dateKeyNames, rangeValue) {
+  if (!row || !rangeValue) return true;
+  const candidates = dateKeyNames.flatMap((key) => [row?.[key], row?.[key.toLowerCase()]]).filter((value) => value !== null && value !== undefined && value !== "");
+  if (!candidates.length) return true;
+
+  const value = candidates.find((candidate) => {
+    const parsed = new Date(candidate);
+    return !Number.isNaN(parsed.getTime());
+  });
+  if (!value) return true;
+
+  const date = new Date(value);
+  return date >= rangeValue.start && date <= rangeValue.end;
+}
+
 function renderDashboard() {
   const data = state.data;
-  const summary = data.dashboard;
+  const summary = data.dashboard || {};
   if (data.user?.role === "dispatcher") {
     return renderDispatcherDashboard(data, summary);
   }
+
+  const vehicles = Array.isArray(data.vehicles) ? data.vehicles : [];
+  const trips = Array.isArray(data.trips) ? data.trips : [];
+  const maintenance = Array.isArray(data.maintenance) ? data.maintenance : [];
+  const assignments = Array.isArray(data.assignments) ? data.assignments : [];
+  const fuelLogs = Array.isArray(data.fuel_logs) ? data.fuel_logs : [];
+  const dashboardRange = getDashboardDateRange(state.dashboard.range, state.dashboard.customStart, state.dashboard.customEnd);
+  const filteredTrips = trips.filter((trip) => dashboardRowMatchesRange(trip, ["shipment_date", "created_at", "updated_at", "date"], dashboardRange));
+  const filteredMaintenance = maintenance.filter((record) => dashboardRowMatchesRange(record, ["performed_on", "service_date", "next_service_due", "created_at"], dashboardRange));
+  const filteredFuelLogs = fuelLogs.filter((record) => dashboardRowMatchesRange(record, ["date", "created_at", "recorded_at"], dashboardRange));
+
+  const totalVehicles = Number(summary.total_vehicles ?? vehicles.length ?? 0);
+  const activeDrivers = Number(summary.active_drivers ?? 0);
+  const assignedVehicles = Number(summary.assigned_vehicles ?? 0);
+  const fleetUtilization = totalVehicles > 0
+    ? Math.round((assignedVehicles / totalVehicles) * 100)
+    : 0;
+  const totalTrips = Number(summary.total_trips ?? summary.recent_trips ?? filteredTrips.length ?? 0);
+  const fuelExpenses = Number(summary.total_fuel_spend ?? summary.fuel_expenses ?? filteredFuelLogs.reduce((total, item) => total + Number(item.total_cost || 0), 0));
+  const maintenanceExpenses = Number(summary.total_maintenance ?? filteredMaintenance.reduce((total, item) => total + Number(item.cost || 0), 0));
+  const totalRevenue = Number(summary.total_trip_revenue ?? filteredTrips.reduce((total, trip) => total + Number(trip.trip_revenue ?? trip.route_rate ?? trip.truck_route_rate ?? 0), 0));
+
+  const operatingVehicles = vehicles.filter((vehicle) => {
+    const status = String(vehicle?.status || "").toLowerCase();
+    return status === "active" || status === "assigned";
+  }).length;
+  const availableVehicles = vehicles.filter((vehicle) => String(vehicle?.status || "").toLowerCase() === "available").length;
+  const underMaintenance = vehicles.filter((vehicle) => String(vehicle?.status || "").toLowerCase() === "maintenance").length;
+  const pendingDispatches = filteredTrips.filter((trip) => {
+    const status = String(trip?.status || "").toLowerCase();
+    return ["pending", "scheduled", "queued", "assigned", "in_transit", "dispatch"].includes(status);
+  }).length;
+  const completedTrips = filteredTrips.filter((trip) => {
+    const status = String(trip?.status || "").toLowerCase();
+    return ["completed", "delivered", "finished", "closed"].includes(status);
+  }).length;
+
+  const overdueMaintenance = filteredMaintenance.filter((item) => {
+    const dateValue = item?.performed_on || item?.service_date || item?.next_service_due;
+    if (!dateValue) return false;
+    const then = new Date(dateValue);
+    if (Number.isNaN(then.getTime())) return false;
+    const ageMs = Date.now() - then.getTime();
+    return ageMs > 90 * 24 * 60 * 60 * 1000;
+  }).length || underMaintenance;
+
+  const currentPeriod = dashboardRange.label;
+  const rangeButtons = [
+    ["today", "Today"],
+    ["week", "This week"],
+    ["month", "This month"],
+    ["custom", "Custom"],
+  ];
+  const activeRange = state.dashboard.range || "month";
+  const quickActions = `
+    <div class="fleet-quick-actions">
+      <button class="button button-primary button-small" type="button" data-action="dashboard-quick-action" data-target="completed-trips">Add Completed Trip</button>
+      <button class="button button-secondary button-small" type="button" data-action="dashboard-quick-action" data-target="trips">Create Dispatch</button>
+      <button class="button button-secondary button-small" type="button" data-action="dashboard-quick-action" data-target="vehicles">Add Vehicle</button>
+      <button class="button button-secondary button-small" type="button" data-action="dashboard-quick-action" data-target="trip-reports">Generate Trip Report</button>
+    </div>`;
+  const customRangeMarkup = state.dashboard.range === "custom" ? `
+    <div class="dashboard-custom-range" aria-label="Custom date range">
+      <label>
+        <span>From</span>
+        <input type="date" value="${escapeHtml(state.dashboard.customStart || "")}" data-dashboard-date="start" />
+      </label>
+      <label>
+        <span>To</span>
+        <input type="date" value="${escapeHtml(state.dashboard.customEnd || "")}" data-dashboard-date="end" />
+      </label>
+      <button class="button button-secondary button-small" type="button" data-action="dashboard-custom-range-apply">Apply</button>
+    </div>` : "";
+
+  const operationalOverview = [
+    ["Operating vehicles", formatNumber(operatingVehicles), "Active fleet", "yellow", "▣"],
+    ["Available vehicles", formatNumber(availableVehicles), "Ready for dispatch", "green", "△"],
+    ["Under maintenance", formatNumber(underMaintenance), "Needs attention", "orange", "⚙"],
+    ["Pending dispatches", formatNumber(pendingDispatches), "Queued movement", "blue", "↦"],
+    ["Completed trips", formatNumber(completedTrips || totalTrips), "Latest results", "success", "✓"],
+    ["Overdue maintenance", formatNumber(overdueMaintenance), "Action required", "danger", "!"],
+  ];
+
   return `
-    ${header("OPERATIONS", "Fleet overview", "Monitor vehicles, drivers, and daily fleet activity.")}
-    <div class="stats-grid">
-      ${statCard("Total vehicles", formatNumber(summary.total_vehicles), "blue", "▰")}
-      ${statCard("Active drivers", formatNumber(summary.active_drivers), "green", "♙")}
-      ${statCard("Assigned vehicles", formatNumber(summary.assigned_vehicles), "purple", "⇄")}
-      ${statCard("Fuel spend", formatCurrency(summary.total_fuel_spend), "orange", "◉")}
-      ${statCard("Maintenance spend", formatCurrency(summary.total_maintenance), "red", "⚙")}
-      ${statCard("Trips recorded", formatNumber(summary.recent_trips), "teal", "⌁")}
+    ${header("OPERATIONS", "Fleet overview", `Current reporting period · ${currentPeriod}`, `
+      <div class="dashboard-toolbar">
+        <div class="date-range-pills" aria-label="Date range selector">
+          ${rangeButtons.map(([value, label]) => `
+            <button class="date-range-pill ${activeRange === value ? "active" : ""}" type="button" data-action="dashboard-range" data-range="${escapeHtml(value)}">${escapeHtml(label)}</button>
+          `).join("")}
+        </div>
+        ${quickActions}
+      </div>
+      ${customRangeMarkup}
+    `)}
+    <div class="stats-grid stats-grid-wide">
+      ${statCard("Total vehicles", formatNumber(totalVehicles), "yellow", "▰")}
+      ${statCard("Active drivers", formatNumber(activeDrivers), "green", "♙")}
+      ${statCard("Assigned vehicles", formatNumber(assignedVehicles), "blue", "⇄")}
+      ${statCard("Fleet utilization", `${fleetUtilization}%`, "orange", "◔")}
+      ${statCard("Total trips", formatNumber(totalTrips), "purple", "⌁")}
+      ${statCard("Fuel expenses", formatCurrency(fuelExpenses), "warning", "◉")}
+      ${statCard("Maintenance expenses", formatCurrency(maintenanceExpenses), "danger", "⚙")}
+      ${statCard("Total trip revenue", formatCurrency(totalRevenue), "success", "₱")}
     </div>
+    <section class="panel fleet-overview-panel min-w-0 rounded-[var(--radius-card)] border border-[var(--border)] bg-[var(--surface)] p-[17px]">
+      <div class="panel-heading mb-[14px] flex items-center justify-between gap-[13px]">
+        <h2>Operational overview</h2>
+      </div>
+      <div class="status-grid">
+        ${operationalOverview.map(([label, value, hint, tone, icon]) => `
+          <button class="status-tile ${tone}" type="button" data-action="dashboard-status-card" data-target="${label.toLowerCase().replace(/[^a-z]+/g, "-").replace(/-$/, "")}">
+            <span class="status-tile-icon" aria-hidden="true">${icon}</span>
+            <span class="status-tile-copy">
+              <strong>${escapeHtml(value)}</strong>
+              <small>${escapeHtml(label)}</small>
+            </span>
+            <em>${escapeHtml(hint)}</em>
+          </button>
+        `).join("")}
+      </div>
+    </section>
     <div class="dashboard-grid">
       ${panel("Trucks", tableMarkup(data.vehicles.slice(0, 5), [
         ["plate_number", "Truck plate"],
@@ -1064,8 +1235,8 @@ function renderDashboard() {
         ["driver_name", "Driver"],
         ["shipment_date", "Shipment date"],
       ], null, { empty: "No trips recorded", rowAction: "trip-details" }), "trips")}
-      ${panel("Vehicle assignments", tableMarkup(data.assignments.slice(0, 5), RESOURCE_CONFIG.assignments.columns, null, { empty: "No assignments yet" }), "assignments")}
-      ${panel("Maintenance", tableMarkup(data.maintenance.slice(0, 5), RESOURCE_CONFIG.maintenance.columns, null, { empty: "No maintenance records" }), "maintenance")}
+      ${panel("Vehicle assignments", tableMarkup(assignments.slice(0, 5), RESOURCE_CONFIG.assignments.columns, null, { empty: "No assignments yet" }), "assignments")}
+      ${panel("Maintenance", tableMarkup(maintenance.slice(0, 5), RESOURCE_CONFIG.maintenance.columns, null, { empty: "No maintenance records" }), "maintenance")}
     </div>
     ${tripDetailsDialogMarkup()}`;
 }
@@ -7909,6 +8080,60 @@ view.addEventListener("click", async (event) => {
       condition: "", sort_by: "date_installed", sort_dir: "desc",
       requestedKey: "",
     });
+    render();
+    return;
+  }
+  if (button.dataset.action === "dashboard-range") {
+    const range = String(button.dataset.range || "month");
+    state.dashboard.range = range;
+    if (range !== "custom") {
+      state.dashboard.customStart = "";
+      state.dashboard.customEnd = "";
+    }
+    render();
+    return;
+  }
+  if (button.dataset.action === "dashboard-custom-range-apply") {
+    const form = button.closest(".page-heading-actions");
+    const inputs = form?.parentElement?.querySelectorAll("[data-dashboard-date]");
+    const start = inputs ? inputs[0]?.value || "" : "";
+    const end = inputs ? inputs[1]?.value || "" : "";
+    state.dashboard.customStart = start;
+    state.dashboard.customEnd = end;
+    if (start && end) {
+      state.dashboard.range = "custom";
+      render();
+    }
+    return;
+  }
+  if (button.dataset.action === "dashboard-status-card") {
+    const target = String(button.dataset.target || "");
+    const navigations = {
+      "operating-vehicles": "vehicles",
+      "available-vehicles": "vehicles",
+      "under-maintenance": "maintenance",
+      "pending-dispatches": "trips",
+      "completed-trips": "completed-trips",
+      "overdue-maintenance": "maintenance",
+    };
+    const page = navigations[target] || "dashboard";
+    if (page === "dashboard") return;
+    location.hash = page;
+    state.page = page;
+    render();
+    return;
+  }
+  if (button.dataset.action === "dashboard-quick-action") {
+    const target = String(button.dataset.target || "");
+    const destinations = {
+      "completed-trips": "completed-trips",
+      "trips": "trips",
+      "vehicles": "vehicles",
+      "trip-reports": "trip-reports",
+    };
+    const hash = destinations[target] || "dashboard";
+    location.hash = hash;
+    state.page = hash;
     render();
     return;
   }

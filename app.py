@@ -72,6 +72,11 @@ app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(seconds=SESSION_IDLE_TIMEOU
 
 manager: FleetManager | None = None
 logger = logging.getLogger(__name__)
+_COMPLETED_TRIP_ACCESS_EMAILS = frozenset({
+    "sceratoconcepts@gmail.com",
+    "besaneszyxa1984@gmail.com",
+    "glfsadmin@glfs.org",
+})
 
 try:
     BUSINESS_TIMEZONE = ZoneInfo("Asia/Manila")
@@ -239,7 +244,7 @@ def _set_authenticated_identity(user: Any) -> None:
 def _completed_trip_access_state() -> tuple[bool, str | None]:
     if (
         not getattr(g, "authenticated_email_verified", False)
-        or getattr(g, "authenticated_email", "") != "sceratoconcepts@gmail.com"
+        or getattr(g, "authenticated_email", "") not in _COMPLETED_TRIP_ACCESS_EMAILS
         or not getattr(g, "authenticated_user_id", "")
     ):
         return False, None
