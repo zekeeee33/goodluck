@@ -238,10 +238,13 @@ server-filtered previews by date, driver, truck, trailer, origin, destination,
 route, and trip status. The report summarizes unique completed trips, routes,
 drivers, and revenue, then shows route and per-driver route details using the
 actual origin and destination so opposite directions remain separate.
+For each driver, the trip records are shown first, followed by a brief movement
+summary listing each route and its trip count.
 Cancelled, incomplete, and duplicate trip records are excluded from report
 totals and details. Excel includes overall, route-summary, route-detail, and
-per-driver worksheets alongside the existing grouping worksheets; PDF exports
-use a structured route summary and detailed trip tables. Both pages are
+per-driver worksheets alongside the existing grouping worksheets. The
+per-driver movement summary follows the driver's trip records; PDF exports
+follow the same order. Both pages are
 read-only and do not change existing trip-entry, dispatch, arrival, or
 financial workflows.
 

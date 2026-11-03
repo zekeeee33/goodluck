@@ -260,21 +260,54 @@ def build_trip_pdf_report(
                 ),
                 group_style,
             ))
+            story.append(trip_table(driver_trips))
+            movement_rows = [[
+                Paragraph("Route", header_style),
+                Paragraph("Route Description", header_style),
+                Paragraph("Total Trips", header_style),
+                Paragraph("Total Revenue", header_style),
+            ]]
             for route in driver_routes:
                 route_summary = summarize_trip_records(route["trips"])
-                story.append(Paragraph(
-                    f"{escape(route['label'])}: "
-                    f"{escape(route['origin'])} → {escape(route['destination'])} | "
-                    f"{route_summary['total_trips']} trips | "
-                    "Gross revenue: "
-                    + (
-                        f"PHP {route_summary['total_revenue']:,.2f}"
-                        if route_summary["revenue_trip_count"] else "N/A"
+                movement_rows.append([
+                    Paragraph(escape(route["label"]), cell_style),
+                    Paragraph(
+                        escape(f"{route['origin']} → {route['destination']}"),
+                        cell_style,
                     ),
-                    small_style,
-                ))
-                story.append(trip_table(route["trips"]))
-                story.append(Spacer(1, 2 * mm))
+                    Paragraph(str(route_summary["total_trips"]), cell_style),
+                    Paragraph(
+                        f"PHP {route_summary['total_revenue']:,.2f}"
+                        if route_summary["revenue_trip_count"] else "N/A",
+                        cell_style,
+                    ),
+                ])
+            story.extend([
+                Paragraph("Movement Summary", group_style),
+                Table(
+                    movement_rows,
+                    colWidths=[
+                        available_width * 0.18,
+                        available_width * 0.48,
+                        available_width * 0.14,
+                        available_width * 0.20,
+                    ],
+                    repeatRows=1,
+                    style=TableStyle([
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
+                            colors.white, colors.HexColor("#EAF1F8"),
+                        ]),
+                        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                        ("TOPPADDING", (0, 0), (-1, -1), 4),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ]),
+                ),
+                Spacer(1, 3 * mm),
+            ])
 
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph(

@@ -593,7 +593,7 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(sheet["B7"].value, 101 * 1847)
         self.assertEqual(sheet["B8"].value, 1847)
         self.assertEqual(sheet.freeze_panes, "A12")
-        self.assertEqual(len(workbook["By Driver"].tables), 1)
+        self.assertEqual(len(workbook["By Driver"].tables), 2)
         self.assertEqual(len(workbook["By Truck"].tables), 1)
         self.assertEqual(len(workbook["By Trailer"].tables), 1)
         driver_sheet = workbook["By Driver"]
@@ -603,6 +603,12 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(driver_sheet["B8"].value, "TRIP DATE")
         self.assertEqual(driver_sheet["M8"].value, "TRIP REVENUE")
         self.assertEqual(driver_sheet["A9"].value, 1)
+        movement_title_row = next(
+            row for row in range(1, driver_sheet.max_row + 1)
+            if driver_sheet.cell(row=row, column=1).value == "MOVEMENT SUMMARY"
+        )
+        self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=1).value, "Route 3")
+        self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=3).value, 101)
         self.assertEqual(driver_sheet.freeze_panes, "A8")
 
     def test_report_export_fetches_all_pages_beyond_ten_thousand_rows(self):
@@ -814,15 +820,18 @@ class AdminTripReportsTests(unittest.TestCase):
             ],
         )
         worksheet = workbook["By Driver"]
-        self.assertEqual(len(worksheet.tables), 2)
+        self.assertEqual(len(worksheet.tables), 4)
         self.assertEqual(worksheet["A7"].value, "JANE DOE (1 trip)")
         self.assertEqual(worksheet["A8"].value, "TRIP ID")
         self.assertEqual(worksheet["A9"].value, 21)
         self.assertEqual(worksheet["E9"].value, "TRL-22")
-        self.assertEqual(worksheet["A12"].value, "JOHN DOE (2 trips)")
-        self.assertEqual(worksheet["A13"].value, "TRIP ID")
-        self.assertEqual(worksheet["A14"].value, 20)
-        self.assertEqual(worksheet["A15"].value, 22)
+        self.assertEqual(worksheet["A11"].value, "MOVEMENT SUMMARY")
+        self.assertEqual(worksheet["A12"].value, "Route")
+        self.assertEqual(worksheet["C13"].value, 1)
+        self.assertEqual(worksheet["A17"].value, "JOHN DOE (2 trips)")
+        self.assertEqual(worksheet["A18"].value, "TRIP ID")
+        self.assertEqual(worksheet["A19"].value, 20)
+        self.assertEqual(worksheet["A20"].value, 22)
         self.assertEqual(len(workbook["By Origin"].tables), 2)
         self.assertEqual(len(workbook["By Destination"].tables), 2)
         self.assertEqual(len(workbook["By Truck"].tables), 2)
@@ -840,6 +849,9 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(workbook["Overall Summary"]["B7"].value, 2)
         self.assertEqual(workbook["Route Details"]["A5"].value.startswith("Route 1:"), True)
         self.assertEqual(workbook["Driver Reports"]["A5"].value.startswith("Jane Doe"), True)
+        self.assertEqual(workbook["Driver Reports"]["A9"].value, "Movement Summary")
+        self.assertEqual(workbook["Driver Reports"]["A11"].value, "Route 1")
+        self.assertEqual(workbook["Driver Reports"]["C11"].value, 1)
 
     def test_driver_report_groups_trips_by_normalized_name_not_driver_id(self):
         from trip_report_utils import group_trip_records

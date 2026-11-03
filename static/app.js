@@ -3651,8 +3651,10 @@ function tripReportGroupedTables(records, groupBy) {
           <td>${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(route.revenue)) : "N/A"}</td>
         </tr>`).join("")}</tbody>
       </table></div>
-    </section>
-    <section class="trip-report-section">
+    </section>`;
+
+  if (groupBy !== "driver") {
+    return `${routeSummary}<section class="trip-report-section">
       <h3>Route Details</h3>
       ${routes.map((route) => `
         <section class="trip-report-driver-group">
@@ -3661,8 +3663,7 @@ function tripReportGroupedTables(records, groupBy) {
           ${tripTable(route.records)}
         </section>`).join("")}
     </section>`;
-
-  if (groupBy !== "driver") return routeSummary;
+  }
   const driverSections = groupTripReportRecords(records, "driver").map((driver) => {
     const driverRouteRecords = new Map();
     for (const trip of driver.records) {
@@ -3682,24 +3683,17 @@ function tripReportGroupedTables(records, groupBy) {
     return `<section class="trip-report-section trip-report-driver-section">
       <h3>Driver: ${escapeHtml(driver.name)}</h3>
       <p class="trip-report-route-totals">Total Trips: ${formatNumber(driver.records.length)} · Unique Routes: ${formatNumber(routeRows.length)} · Total Revenue: ${driver.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(revenue)) : "N/A"}</p>
+      ${tripTable(driver.records)}
+      <h4>Movement Summary</h4>
       <div class="table-wrap"><table class="trip-record-table trip-report-summary-table">
         <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th></tr></thead>
         <tbody>${routeRows.map((route) => {
           return `<tr><td>${escapeHtml(route.label)}</td><td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td><td>${formatNumber(route.records.length)}</td></tr>`;
         }).join("")}</tbody>
       </table></div>
-      ${routeRows.map((route) => {
-        const routeTrips = route.records;
-        const routeRevenue = tripReportRevenueTotal(routeTrips);
-        return `<section class="trip-report-driver-group">
-          <h4>${escapeHtml(`${route.label}: ${route.origin} → ${route.destination}`)}</h4>
-          <p class="trip-report-route-totals">Total Trips: ${formatNumber(routeTrips.length)} · Total Revenue: ${routeTrips.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(routeRevenue)) : "N/A"}</p>
-          ${tripTable(routeTrips)}
-        </section>`;
-      }).join("")}
     </section>`;
   }).join("");
-  return `${routeSummary}<section class="trip-report-section"><h3>Per-Driver Route Breakdown</h3>${driverSections}</section>`;
+  return `${routeSummary}<section class="trip-report-section"><h3>Per-Driver Trips and Movement</h3>${driverSections}</section>`;
 }
 
 function renderTripReports() {
