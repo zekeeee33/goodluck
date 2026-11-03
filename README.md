@@ -234,12 +234,16 @@ with the same name are not split only because they have different driver IDs.
 Dispatchers are redirected away from the page, and the Flask endpoint and
 Supabase RPC independently enforce administrator authorization.
 Trip Reports are available separately from Reports & Analytics. They provide
-server-filtered previews by date, driver, truck, origin, destination, route,
-and trip status, with paginated PDF and formatted Excel downloads. Exports
-include the complete matching result set up to 10,000 trips, shipment-date
-filters, trip totals, measured odometer distance, and signature fields in the
-PDF. Both pages are read-only and do not change existing trip-entry, dispatch,
-arrival, or financial workflows.
+server-filtered previews by date, driver, truck, trailer, origin, destination,
+route, and trip status. The report summarizes unique completed trips, routes,
+drivers, and revenue, then shows route and per-driver route details using the
+actual origin and destination so opposite directions remain separate.
+Cancelled, incomplete, and duplicate trip records are excluded from report
+totals and details. Excel includes overall, route-summary, route-detail, and
+per-driver worksheets alongside the existing grouping worksheets; PDF exports
+use a structured route summary and detailed trip tables. Both pages are
+read-only and do not change existing trip-entry, dispatch, arrival, or
+financial workflows.
 
 Create trucks and trailers separately in Fleet Management. Select an eligible
 truck and an active trailer when dispatching a trip; the trailer's configured

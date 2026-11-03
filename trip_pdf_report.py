@@ -21,8 +21,9 @@ from reportlab.platypus import (
 
 from trip_report_utils import (
     TRIP_REPORT_FIELDS,
-    TRIP_REPORT_GROUPINGS,
-    group_trip_records,
+    completed_trip_records,
+    group_trip_records_by_driver,
+    group_trip_records_by_route,
     summarize_trip_records,
 )
 
@@ -31,6 +32,7 @@ def build_trip_pdf_report(
     trips: list[dict[str, Any]],
     metadata: dict[str, Any],
 ) -> BytesIO:
+    trips = completed_trip_records(trips)
     output = BytesIO()
     page_width, _ = landscape(A3)
     document = SimpleDocTemplate(
@@ -76,14 +78,12 @@ def build_trip_pdf_report(
         textColor=colors.white, alignment=TA_CENTER,
     )
     summary = summarize_trip_records(trips)
-    grouping = str(
-        metadata.get("group_by") or metadata.get("report_type") or "all"
-    )
-    if grouping not in TRIP_REPORT_GROUPINGS:
-        raise ValueError(f"Unsupported PDF report grouping: {grouping}")
-    title = str(metadata.get("title") or TRIP_REPORT_GROUPINGS[grouping])
+    grouping = str(metadata.get("group_by") or metadata.get("report_type") or "all")
+    title = str(metadata.get("title") or "Trip Report")
     available_width = page_width - 20 * mm
     average_revenue = summary["average_revenue_per_trip"]
+    routes = group_trip_records_by_route(trips)
+    drivers = group_trip_records_by_driver(trips)
     story = [
         Paragraph(escape(title), title_style),
         Paragraph(
@@ -96,24 +96,32 @@ def build_trip_pdf_report(
         ),
         Table(
             [[
-                Paragraph("TOTAL TRIPS", summary_label_style),
+                Paragraph("COMPLETED TRIPS", summary_label_style),
+                Paragraph("UNIQUE ROUTES", summary_label_style),
+                Paragraph("DRIVERS", summary_label_style),
                 Paragraph("TOTAL DISTANCE", summary_label_style),
                 Paragraph("TOTAL GROSS TRIP REVENUE", summary_label_style),
                 Paragraph("AVERAGE GROSS REVENUE / VALID TRIP", summary_label_style),
             ], [
                 Paragraph(f"{summary['total_trips']:,}", summary_value_style),
+                Paragraph(f"{len(routes):,}", summary_value_style),
+                Paragraph(f"{len(drivers):,}", summary_value_style),
                 Paragraph(
                     f"{summary['total_distance']:,.1f} km "
                     f"({summary['distance_trip_count']} measured)",
                     summary_value_style,
                 ),
-                Paragraph(f"PHP {summary['total_revenue']:,.2f}", summary_value_style),
+                Paragraph(
+                    f"PHP {summary['total_revenue']:,.2f}"
+                    if summary["revenue_trip_count"] else "N/A",
+                    summary_value_style,
+                ),
                 Paragraph(
                     f"PHP {average_revenue:,.2f}" if average_revenue is not None else "N/A",
                     summary_value_style,
                 ),
             ]],
-            colWidths=[available_width / 4] * 4,
+            colWidths=[available_width / 6] * 6,
             style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
                 ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#EAF1F8")),
@@ -133,15 +141,56 @@ def build_trip_pdf_report(
     scale = available_width / sum(natural_widths)
     table_widths = [width * scale for width in natural_widths]
     headers = [label for _, label in TRIP_REPORT_FIELDS]
-    for group_label, group_trips in group_trip_records(trips, grouping):
-        group_summary = summarize_trip_records(group_trips)
-        story.append(Paragraph(
-            f"{escape(group_label)} | {group_summary['total_trips']} "
-            f"{'trip' if group_summary['total_trips'] == 1 else 'trips'} | "
-            f"{group_summary['total_distance']:,.1f} km | "
-            f"Gross revenue: PHP {group_summary['total_revenue']:,.2f}",
-            group_style,
-        ))
+
+    route_summary_rows = [[
+        Paragraph("Route", header_style),
+        Paragraph("Route Description", header_style),
+        Paragraph("Total Trips", header_style),
+        Paragraph("Total Revenue", header_style),
+    ]]
+    for route in routes:
+        route_totals = summarize_trip_records(route["trips"])
+        route_summary_rows.append([
+            Paragraph(escape(route["label"]), cell_style),
+            Paragraph(
+                escape(f"{route['origin']} → {route['destination']}"),
+                cell_style,
+            ),
+            Paragraph(str(route_totals["total_trips"]), cell_style),
+            Paragraph(
+                f"PHP {route_totals['total_revenue']:,.2f}"
+                if route_totals["revenue_trip_count"] else "N/A",
+                cell_style,
+            ),
+        ])
+    story.extend([
+        Paragraph("Route Summary", group_style),
+        Table(
+            route_summary_rows,
+            colWidths=[
+                available_width * 0.18,
+                available_width * 0.48,
+                available_width * 0.14,
+                available_width * 0.20,
+            ],
+            repeatRows=1,
+            style=TableStyle([
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
+                    colors.white, colors.HexColor("#EAF1F8"),
+                ]),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]),
+        ),
+        Spacer(1, 3 * mm),
+    ])
+
+    def trip_table(group_trips: list[dict[str, Any]]) -> LongTable:
         table_rows = [[Paragraph(escape(label), header_style) for label in headers]]
         for trip in group_trips:
             row = []
@@ -156,7 +205,6 @@ def build_trip_pdf_report(
                     cell_style,
                 ))
             table_rows.append(row)
-
         report_table = LongTable(
             table_rows,
             colWidths=table_widths,
@@ -176,14 +224,67 @@ def build_trip_pdf_report(
             ("TOPPADDING", (0, 0), (-1, -1), 3),
             ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
         ]))
-        story.append(report_table)
+        return report_table
+
+    for route in routes:
+        group_trips = route["trips"]
+        group_summary = summarize_trip_records(group_trips)
+        story.append(Paragraph(
+            f"{escape(route['label'])}: "
+            f"{escape(route['origin'])} → {escape(route['destination'])} | "
+            f"{group_summary['total_trips']} "
+            f"{'trip' if group_summary['total_trips'] == 1 else 'trips'} | "
+            "Gross revenue: "
+            + (
+                f"PHP {group_summary['total_revenue']:,.2f}"
+                if group_summary["revenue_trip_count"] else "N/A"
+            ),
+            group_style,
+        ))
+        story.append(trip_table(group_trips))
         story.append(Spacer(1, 2 * mm))
+
+    if grouping == "driver":
+        story.append(Paragraph("Per-Driver Route Breakdown", group_style))
+        for driver_name, driver_trips in drivers:
+            driver_routes = group_trip_records_by_route(driver_trips)
+            driver_summary = summarize_trip_records(driver_trips)
+            story.append(Paragraph(
+                f"Driver: {escape(driver_name)} | "
+                f"{driver_summary['total_trips']} trips | "
+                f"{len(driver_routes)} routes | "
+                "Gross revenue: "
+                + (
+                    f"PHP {driver_summary['total_revenue']:,.2f}"
+                    if driver_summary["revenue_trip_count"] else "N/A"
+                ),
+                group_style,
+            ))
+            for route in driver_routes:
+                route_summary = summarize_trip_records(route["trips"])
+                story.append(Paragraph(
+                    f"{escape(route['label'])}: "
+                    f"{escape(route['origin'])} → {escape(route['destination'])} | "
+                    f"{route_summary['total_trips']} trips | "
+                    "Gross revenue: "
+                    + (
+                        f"PHP {route_summary['total_revenue']:,.2f}"
+                        if route_summary["revenue_trip_count"] else "N/A"
+                    ),
+                    small_style,
+                ))
+                story.append(trip_table(route["trips"]))
+                story.append(Spacer(1, 2 * mm))
 
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph(
         f"Overall total: {summary['total_trips']} trips | "
         f"{summary['total_distance']:,.1f} km | "
-        f"Gross trip revenue: PHP {summary['total_revenue']:,.2f}",
+        "Gross trip revenue: "
+        + (
+            f"PHP {summary['total_revenue']:,.2f}"
+            if summary["revenue_trip_count"] else "N/A"
+        ),
         group_style,
     ))
 

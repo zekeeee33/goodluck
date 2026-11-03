@@ -304,7 +304,10 @@ class AdminTripReportsTests(unittest.TestCase):
 
     def test_report_preview_uses_combined_multi_select_filters(self):
         report = {
-            "records": [{"id": 91, "ism_no": "ISM-91"}],
+            "records": [{
+                "id": 91, "ism_no": "ISM-91", "status": "completed",
+                "origin": "Manila", "destination": "Cavite",
+            }],
             "total": 1,
             "page": 2,
             "page_size": 25,
@@ -319,10 +322,15 @@ class AdminTripReportsTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.get_json(), report)
+        result = response.get_json()
+        self.assertEqual(result["records"], report["records"])
+        self.assertEqual(result["total"], 1)
+        self.assertEqual(result["total_unique_routes"], 1)
+        self.assertEqual(result["total_drivers"], 1)
+        self.assertEqual(result["route_summaries"][0]["total_trips"], 1)
         rpc.assert_called_once_with("admin_trip_report_page", {
-            "p_page": 2,
-            "p_page_size": 25,
+            "p_page": 1,
+            "p_page_size": 100,
             "p_search": "",
             "p_date_from": "2026-01-01",
             "p_date_to": "2026-01-31",
@@ -471,12 +479,14 @@ class AdminTripReportsTests(unittest.TestCase):
                     "driver_name": "Jane Doe",
                     "distance": 12,
                     "trip_revenue": "300.10",
+                    "status": "completed",
                 },
                 {
                     "driver_id": 2,
                     "driver_name": "Jane Doe",
                     "distance": None,
                     "trip_revenue": None,
+                    "status": "completed",
                 },
             ],
         )
@@ -568,7 +578,11 @@ class AdminTripReportsTests(unittest.TestCase):
         workbook = load_workbook(BytesIO(response.data), data_only=True)
         self.assertEqual(
             workbook.sheetnames,
-            ["All Trips", "By Driver", "By Origin", "By Destination", "By Truck", "By Trailer"],
+            [
+                "Overall Summary", "Route Summaries", "Route Details",
+                "Driver Reports", "All Trips", "By Driver", "By Origin",
+                "By Destination", "By Truck", "By Trailer",
+            ],
         )
         sheet = workbook["All Trips"]
         self.assertEqual(sheet["A11"].value, "Trip ID")
@@ -631,6 +645,7 @@ class AdminTripReportsTests(unittest.TestCase):
                 "route_number": 3,
                 "route_rate": 1847,
                 "distance": 50,
+                "status": "completed",
             }
             for index in range(150)
         ]
@@ -668,7 +683,8 @@ class AdminTripReportsTests(unittest.TestCase):
 
     def test_trip_report_migration_enforces_admin_and_server_side_filters(self):
         migration_path = os.path.join(
-            os.path.dirname(__file__), "..", "supabase_trip_reports_migration.sql"
+            os.path.dirname(__file__), "..", "Sql snippets",
+            "supabase_trip_reports_migration.sql",
         )
         with open(migration_path, encoding="utf-8") as migration_file:
             migration = migration_file.read()
@@ -746,6 +762,7 @@ class AdminTripReportsTests(unittest.TestCase):
                     "trip_date": "2026-01-01",
                     "distance": 10,
                     "trip_revenue": "100.10",
+                    "status": "completed",
                 },
                 {
                     "id": 20,
@@ -760,6 +777,7 @@ class AdminTripReportsTests(unittest.TestCase):
                     "trip_date": "2026-01-02",
                     "distance": 20,
                     "trip_revenue": "200.00",
+                    "status": "completed",
                 },
                 {
                     "id": 22,
@@ -774,6 +792,7 @@ class AdminTripReportsTests(unittest.TestCase):
                     "trip_date": "2026-01-03",
                     "distance": 30,
                     "trip_revenue": None,
+                    "status": "completed",
                 },
             ],
             {
@@ -788,7 +807,11 @@ class AdminTripReportsTests(unittest.TestCase):
         workbook = load_workbook(report, data_only=True)
         self.assertEqual(
             workbook.sheetnames,
-            ["All Trips", "By Driver", "By Origin", "By Destination", "By Truck", "By Trailer"],
+            [
+                "Overall Summary", "Route Summaries", "Route Details",
+                "Driver Reports", "All Trips", "By Driver", "By Origin",
+                "By Destination", "By Truck", "By Trailer",
+            ],
         )
         worksheet = workbook["By Driver"]
         self.assertEqual(len(worksheet.tables), 2)
@@ -807,6 +830,16 @@ class AdminTripReportsTests(unittest.TestCase):
         all_trips = workbook["All Trips"]
         self.assertEqual(float(all_trips["B7"].value), 300.10)
         self.assertAlmostEqual(float(all_trips["B8"].value), 150.05)
+        route_summary = workbook["Route Summaries"]
+        self.assertEqual(route_summary["A6"].value, "Route 1")
+        self.assertEqual(route_summary["E6"].value, 2)
+        self.assertEqual(route_summary["A7"].value, "Route 2")
+        self.assertEqual(route_summary["E7"].value, 1)
+        self.assertEqual(workbook["Overall Summary"]["B5"].value, 3)
+        self.assertEqual(workbook["Overall Summary"]["B6"].value, 2)
+        self.assertEqual(workbook["Overall Summary"]["B7"].value, 2)
+        self.assertEqual(workbook["Route Details"]["A5"].value.startswith("Route 1:"), True)
+        self.assertEqual(workbook["Driver Reports"]["A5"].value.startswith("Jane Doe"), True)
 
     def test_driver_report_groups_trips_by_normalized_name_not_driver_id(self):
         from trip_report_utils import group_trip_records
@@ -823,6 +856,46 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(
             [(label, [trip["id"] for trip in trips]) for label, trips in groups],
             [("Jane Doe", [1, 2]), ("John Doe", [3])],
+        )
+
+    def test_completed_route_groups_deduplicate_records_and_keep_directions_separate(self):
+        from trip_report_utils import (
+            completed_trip_records,
+            group_trip_records_by_route,
+        )
+
+        trips = [
+            {
+                "id": 1, "status": "completed", "route_number": 4,
+                "origin": "Davao", "destination": "GenSan",
+            },
+            {
+                "id": 1, "status": "completed", "route_number": 4,
+                "origin": "Davao", "destination": "GenSan",
+            },
+            {
+                "id": 2, "status": "completed", "route_number": 4,
+                "origin": "GenSan", "destination": "Davao",
+            },
+            {
+                "id": 3, "status": "awaiting_arrival", "route_number": 4,
+                "origin": "Davao", "destination": "GenSan",
+            },
+            {
+                "id": 4, "status": "cancelled", "route_number": 4,
+                "origin": "Davao", "destination": "GenSan",
+            },
+        ]
+
+        completed = completed_trip_records(trips)
+        route_groups = group_trip_records_by_route(completed)
+
+        self.assertEqual([trip["id"] for trip in completed], [1, 2])
+        self.assertEqual(len(route_groups), 2)
+        self.assertEqual(
+            {(route["origin"], route["destination"], len(route["trips"]))
+             for route in route_groups},
+            {("Davao", "GenSan", 1), ("GenSan", "Davao", 1)},
         )
 
 

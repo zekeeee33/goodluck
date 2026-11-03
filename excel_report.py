@@ -14,7 +14,9 @@ from openpyxl.worksheet.table import Table, TableStyleInfo
 from trip_report_utils import (
     TRIP_REPORT_FIELDS,
     TRIP_REPORT_GROUPINGS,
+    completed_trip_records,
     group_trip_records,
+    group_trip_records_by_route,
     summarize_trip_records,
 )
 
@@ -357,7 +359,7 @@ def build_filtered_trip_excel_report(
     trips: list[dict[str, Any]],
     metadata: dict[str, Any],
 ) -> BytesIO:
-    headers = [field for field, _ in TRIP_REPORT_FIELDS]
+    trips = completed_trip_records(trips)
     overall = summarize_trip_records(trips)
     workbook = Workbook()
     workbook.properties.title = str(metadata.get("title") or "Trip Report")
@@ -381,8 +383,9 @@ def build_filtered_trip_excel_report(
         row_number: int,
         trip: dict[str, Any],
         report_fields: tuple[tuple[str, str], ...],
+        start_column: int = 1,
     ) -> None:
-        for column, (field, _) in enumerate(report_fields, start=1):
+        for column, (field, _) in enumerate(report_fields, start=start_column):
             value = trip.get(field)
             cell = worksheet.cell(
                 row=row_number, column=column,
@@ -400,12 +403,227 @@ def build_filtered_trip_excel_report(
             elif field in {"time_in", "time_out"} and isinstance(cell.value, time):
                 cell.number_format = "hh:mm"
 
+    routes = group_trip_records_by_route(trips)
+    drivers = group_trip_records(trips, "driver")
+
+    def write_sheet_title(worksheet: Any, title: str, column_count: int) -> None:
+        worksheet.sheet_view.showGridLines = False
+        worksheet.merge_cells(
+            start_row=1, start_column=1, end_row=1, end_column=column_count
+        )
+        title_cell = worksheet.cell(row=1, column=1, value=title)
+        title_cell.font = Font(size=16, bold=True, color="FFFFFF")
+        title_cell.fill = title_fill
+        worksheet.row_dimensions[1].height = 28
+        worksheet.cell(row=2, column=1, value=metadata.get("generated_at", ""))
+        worksheet.cell(row=3, column=1, value=metadata.get("filter_summary", "All trips"))
+
+    def write_table_header(worksheet: Any, row_number: int, labels: list[str]) -> None:
+        for column, label in enumerate(labels, start=1):
+            cell = worksheet.cell(row=row_number, column=column, value=label)
+            cell.font = Font(bold=True, color="FFFFFF")
+            cell.fill = header_fill
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        worksheet.row_dimensions[row_number].height = 28
+
+    overview = workbook.active
+    overview.title = "Overall Summary"
+    write_sheet_title(overview, "Overall Trip Summary", 4)
+    summary_rows = [
+        ("Total completed trips", overall["total_trips"]),
+        ("Unique routes traveled", len(routes)),
+        ("Drivers involved", len(drivers)),
+        (
+            "Total trip revenue",
+            overall["total_revenue"] if overall["revenue_trip_count"] else None,
+        ),
+    ]
+    for row_number, (label, value) in enumerate(summary_rows, start=5):
+        overview.cell(row=row_number, column=1, value=label).font = Font(bold=True)
+        overview.cell(row=row_number, column=1).fill = summary_fill
+        value_cell = overview.cell(row=row_number, column=2, value=value)
+        value_cell.fill = summary_fill
+        if label == "Total trip revenue":
+            value_cell.number_format = currency_format
+    overview.cell(row=11, column=1, value="Route Summary").font = Font(bold=True, size=12)
+    write_table_header(overview, 12, ["Route", "Route Description", "Total Trips", "Total Revenue"])
+    for row_number, route in enumerate(routes, start=13):
+        route_summary = summarize_trip_records(route["trips"])
+        overview.cell(row=row_number, column=1, value=route["label"])
+        overview.cell(
+            row=row_number, column=2,
+            value=f"{route['origin']} → {route['destination']}",
+        )
+        overview.cell(row=row_number, column=3, value=route_summary["total_trips"])
+        revenue_cell = overview.cell(
+            row=row_number, column=4,
+            value=(
+                route_summary["total_revenue"]
+                if route_summary["revenue_trip_count"] else None
+            ),
+        )
+        revenue_cell.number_format = currency_format
+    overview.freeze_panes = "A13"
+    overview.column_dimensions["A"].width = 28
+    overview.column_dimensions["B"].width = 55
+    overview.column_dimensions["C"].width = 18
+    overview.column_dimensions["D"].width = 20
+
+    route_summary_sheet = workbook.create_sheet("Route Summaries")
+    write_sheet_title(route_summary_sheet, "Route Summaries", 6)
+    write_table_header(
+        route_summary_sheet, 5,
+        ["Route", "Route Identifier", "Origin", "Destination", "Total Trips", "Total Revenue"],
+    )
+    for row_number, route in enumerate(routes, start=6):
+        route_summary = summarize_trip_records(route["trips"])
+        values = (
+            route["label"], route["identifier"], route["origin"],
+            route["destination"], route_summary["total_trips"],
+            (
+                route_summary["total_revenue"]
+                if route_summary["revenue_trip_count"] else None
+            ),
+        )
+        for column, value in enumerate(values, start=1):
+            route_summary_sheet.cell(row=row_number, column=column, value=value)
+        route_summary_sheet.cell(row=row_number, column=6).number_format = currency_format
+    route_summary_sheet.freeze_panes = "A6"
+    route_summary_sheet.column_dimensions["A"].width = 22
+    route_summary_sheet.column_dimensions["B"].width = 20
+    route_summary_sheet.column_dimensions["C"].width = 30
+    route_summary_sheet.column_dimensions["D"].width = 30
+    route_summary_sheet.column_dimensions["E"].width = 16
+    route_summary_sheet.column_dimensions["F"].width = 20
+
+    route_details = workbook.create_sheet("Route Details")
+    route_detail_headers = ["Route", "Route Description", *[label for _, label in TRIP_REPORT_FIELDS]]
+    write_sheet_title(route_details, "Detailed Route Records", len(route_detail_headers))
+    row_number = 5
+    for route in routes:
+        route_summary = summarize_trip_records(route["trips"])
+        route_details.merge_cells(
+            start_row=row_number, start_column=1,
+            end_row=row_number, end_column=len(route_detail_headers),
+        )
+        route_title = route_details.cell(
+            row=row_number, column=1,
+            value=(
+                f"{route['label']}: {route['origin']} → {route['destination']} | "
+                f"Trips: {route_summary['total_trips']} | "
+                f"Revenue: "
+                f"{'₱{:,.2f}'.format(route_summary['total_revenue']) if route_summary['revenue_trip_count'] else 'N/A'}"
+            ),
+        )
+        route_title.font = Font(bold=True, color="17365D")
+        route_title.fill = group_fill
+        row_number += 1
+        write_table_header(route_details, row_number, route_detail_headers)
+        row_number += 1
+        for trip in route["trips"]:
+            route_details.cell(row=row_number, column=1, value=route["label"])
+            route_details.cell(
+                row=row_number, column=2,
+                value=f"{route['origin']} → {route['destination']}",
+            )
+            write_trip_row(
+                route_details, row_number, trip, TRIP_REPORT_FIELDS,
+                start_column=3,
+            )
+            row_number += 1
+        row_number += 1
+    route_details.freeze_panes = "A6"
+    route_details.page_setup.orientation = "landscape"
+
+    driver_reports = workbook.create_sheet("Driver Reports")
+    driver_fields = tuple(
+        field for field in TRIP_REPORT_FIELDS
+    )
+    driver_headers = ["Route", "Route Description", *[label for _, label in driver_fields]]
+    write_sheet_title(driver_reports, "Per-Driver Trip Reports", len(driver_headers))
+    row_number = 5
+    for driver_name, driver_trips in drivers:
+        driver_routes = group_trip_records_by_route(driver_trips)
+        driver_summary = summarize_trip_records(driver_trips)
+        driver_reports.merge_cells(
+            start_row=row_number, start_column=1,
+            end_row=row_number, end_column=len(driver_headers),
+        )
+        driver_title = driver_reports.cell(
+            row=row_number, column=1,
+            value=(
+                f"{driver_name} | Trips: {driver_summary['total_trips']} | "
+                f"Unique routes: {len(driver_routes)} | "
+                f"Revenue: "
+                f"{'₱{:,.2f}'.format(driver_summary['total_revenue']) if driver_summary['revenue_trip_count'] else 'N/A'}"
+            ),
+        )
+        driver_title.font = Font(bold=True, color="17365D")
+        driver_title.fill = group_fill
+        row_number += 1
+        write_table_header(
+            driver_reports, row_number,
+            ["Route", "Route Description", "Total Trips", "Total Revenue"],
+        )
+        row_number += 1
+        for route in driver_routes:
+            route_summary = summarize_trip_records(route["trips"])
+            driver_reports.cell(row=row_number, column=1, value=route["label"])
+            driver_reports.cell(
+                row=row_number, column=2,
+                value=f"{route['origin']} → {route['destination']}",
+            )
+            driver_reports.cell(
+                row=row_number, column=3,
+                value=route_summary["total_trips"],
+            )
+            driver_reports.cell(
+                row=row_number, column=4,
+                value=                (
+                    route_summary["total_revenue"]
+                    if route_summary["revenue_trip_count"] else None
+                ),
+            ).number_format = currency_format
+            row_number += 1
+        for route in driver_routes:
+            route_summary = summarize_trip_records(route["trips"])
+            driver_reports.merge_cells(
+                start_row=row_number, start_column=1,
+                end_row=row_number, end_column=len(driver_headers),
+            )
+            driver_reports.cell(
+                row=row_number, column=1,
+                value=(
+                    f"{route['label']}: {route['origin']} → {route['destination']} | "
+                    f"Trips: {route_summary['total_trips']} | "
+                    f"Revenue: "
+                    f"{'₱{:,.2f}'.format(route_summary['total_revenue']) if route_summary['revenue_trip_count'] else 'N/A'}"
+                ),
+            ).fill = summary_fill
+            row_number += 1
+            write_table_header(driver_reports, row_number, driver_headers)
+            row_number += 1
+            for trip in route["trips"]:
+                driver_reports.cell(row=row_number, column=1, value=route["label"])
+                driver_reports.cell(
+                    row=row_number, column=2,
+                    value=f"{route['origin']} → {route['destination']}",
+                )
+                write_trip_row(
+                    driver_reports, row_number, trip, driver_fields,
+                    start_column=3,
+                )
+                row_number += 1
+        row_number += 1
+    driver_reports.freeze_panes = "A6"
+    driver_reports.page_setup.orientation = "landscape"
+
     for sheet_index, (group_by, sheet_title) in enumerate(TRIP_REPORT_GROUPINGS.items()):
         report_fields = (
             DRIVER_REPORT_FIELDS if group_by == "driver" else TRIP_REPORT_FIELDS
         )
         headers = [field for field, _ in report_fields]
-        worksheet = workbook.active if sheet_index == 0 else workbook.create_sheet()
+        worksheet = workbook.create_sheet()
         worksheet.title = sheet_title
         worksheet.sheet_view.showGridLines = False
         worksheet.freeze_panes = "A8" if group_by == "driver" else "A12"

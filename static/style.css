@@ -886,6 +886,11 @@ button.dispatcher-summary-card:hover { transform: translateY(-1px); border-color
 .trip-report-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; color: var(--muted); font-size: 11px; }
 .trip-report-summary strong { color: var(--ink); }
 .trip-report-summary span { overflow-wrap: anywhere; }
+.trip-report-section { margin: 18px 0; }
+.trip-report-section > h3 { margin: 0 0 8px; color: var(--ink); font-size: 15px; }
+.trip-report-section h4 { margin: 8px 0 4px; color: var(--ink); font-size: 12px; }
+.trip-report-route-totals { margin: 0 0 7px; color: var(--muted); font-size: 11px; }
+.trip-report-summary-table { min-width: 640px !important; }
 .trip-report-driver-group { margin: 12px 0 18px; }
 .trip-report-driver-group h3 { margin: 0 0 7px; color: var(--ink); font-size: 13px; }
 .trip-report-driver-group h3 span { color: var(--muted); font-size: 11px; font-weight: 500; }

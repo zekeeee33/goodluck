@@ -117,6 +117,65 @@ def group_trip_records_by_driver(
     return group_trip_records(trips, "driver")
 
 
+def completed_trip_records(
+    trips: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    unique_trips: dict[str, dict[str, Any]] = {}
+    for index, trip in enumerate(trips):
+        if str(trip.get("status") or "").strip().casefold() != "completed":
+            continue
+        trip_id = trip.get("id")
+        identity = f"id:{trip_id}" if trip_id is not None else f"row:{index}"
+        unique_trips.setdefault(identity, trip)
+    return list(unique_trips.values())
+
+
+def _route_identifier(trip: dict[str, Any]) -> str:
+    for field in ("route_number", "route_pair", "route"):
+        raw_value = trip.get(field)
+        value = str(raw_value).strip() if raw_value is not None else ""
+        if value:
+            return value
+    return ""
+
+
+def group_trip_records_by_route(
+    trips: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
+    labels: dict[tuple[str, str, str], tuple[str, str, str]] = {}
+    for trip in trips:
+        origin = " ".join(str(trip.get("origin") or "").split())
+        destination = " ".join(str(trip.get("destination") or "").split())
+        identifier = _route_identifier(trip)
+        key = (identifier.casefold(), origin.casefold(), destination.casefold())
+        groups[key].append(trip)
+        labels.setdefault(key, (identifier, origin, destination))
+
+    ordered_keys = sorted(
+        groups,
+        key=lambda key: (
+            labels[key][1].casefold(),
+            labels[key][2].casefold(),
+            key[0],
+        ),
+    )
+    result = []
+    for route_index, key in enumerate(ordered_keys, start=1):
+        identifier, origin, destination = labels[key]
+        result.append({
+            "identifier": identifier or str(route_index),
+            "label": (
+                f"Route {identifier}" if identifier
+                else f"Route {route_index}"
+            ),
+            "origin": origin or "Unknown origin",
+            "destination": destination or "Unknown destination",
+            "trips": groups[key],
+        })
+    return result
+
+
 def summarize_trip_records(trips: list[dict[str, Any]]) -> dict[str, Any]:
     total_distance = Decimal("0")
     total_revenue = Decimal("0")

@@ -40,6 +40,9 @@ from manifest_ocr import extract_manifest_fields, scan_manifest_image
 from trip_pdf_report import build_trip_pdf_report
 from trip_report_utils import (
     TRIP_REPORT_GROUPINGS,
+    completed_trip_records,
+    group_trip_records,
+    group_trip_records_by_route,
     summarize_trip_records,
 )
 
@@ -1839,7 +1842,8 @@ def _trip_report_metadata(
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     report_type = params["p_report_type"]
-    summary = summarize_trip_records(records)
+    records = completed_trip_records(records)
+    report_summary = _trip_report_summary(records)
     filters: list[str] = []
     if params["p_date_from"] or params["p_date_to"]:
         filters.append(
@@ -1887,7 +1891,28 @@ def _trip_report_metadata(
         "title": TRIP_REPORT_TYPES[report_type],
         "generated_at": datetime.now().astimezone().strftime("%Y-%m-%d %H:%M %Z"),
         "filter_summary": " | ".join(filters) if filters else "All trips",
-        **summary,
+        **report_summary,
+    }
+
+
+def _trip_report_summary(records: list[dict[str, Any]]) -> dict[str, Any]:
+    routes = group_trip_records_by_route(records)
+    drivers = group_trip_records(records, "driver")
+    return {
+        **summarize_trip_records(records),
+        "total_unique_routes": len(routes),
+        "total_drivers": len(drivers),
+        "route_summaries": [
+            {
+                "identifier": route["identifier"],
+                "label": route["label"],
+                "origin": route["origin"],
+                "destination": route["destination"],
+                "total_trips": len(route["trips"]),
+                "total_revenue": summarize_trip_records(route["trips"])["total_revenue"],
+            }
+            for route in routes
+        ],
     }
 
 
@@ -1931,14 +1956,30 @@ def admin_trip_report_preview() -> Any:
     except ValueError as exc:
         return _json_error(str(exc), 400)
     try:
-        result = _dispatch_rpc("admin_trip_report_page", params)
+        records, _ = _trip_report_all_records(params)
     except FleetManagementError as exc:
         if "only administrators" in str(exc).lower():
             return _json_error(str(exc), 403)
         return _dispatch_error_response(exc)
-    if not isinstance(result, dict):
-        return _json_error("Could not load the trip report preview. Please retry.", 503)
-    return jsonify(result)
+    records = completed_trip_records(records)
+    summary = _trip_report_summary(records)
+    return jsonify({
+        "records": records,
+        "total": len(records),
+        "page": 1,
+        "page_size": len(records),
+        "summary": {
+            "total_trips": summary["total_trips"],
+            "total_distance": summary["total_distance"],
+            "distance_trip_count": summary["distance_trip_count"],
+            "total_revenue": summary["total_revenue"],
+            "revenue_trip_count": summary["revenue_trip_count"],
+            "average_revenue_per_trip": summary["average_revenue_per_trip"],
+        },
+        "total_unique_routes": summary["total_unique_routes"],
+        "total_drivers": summary["total_drivers"],
+        "route_summaries": summary["route_summaries"],
+    })
 
 
 @app.route("/api/admin/trip-duplicates")
@@ -2012,6 +2053,7 @@ def _export_admin_trip_report(file_format: str) -> Any:
         if "only administrators" in str(exc).lower():
             return _json_error(str(exc), 403)
         return _dispatch_error_response(exc)
+    records = completed_trip_records(records)
     metadata = _trip_report_metadata(params, records)
     if not records:
         return _json_error("No trips match the selected report filters.", 422)
