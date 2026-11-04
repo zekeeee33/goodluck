@@ -190,6 +190,7 @@ const RESOURCE_CONFIG = {
       { name: "notes", label: "Notes", type: "textarea" },
     ],
     columns: [
+      ["trip_count", "TRIP COUNT", (value) => value != null ? formatNumber(value) : "—"],
       ["ism_no", "ISM NO"],
       ["shipment_date", "SHIPMENT DATE"],
       ["origin", "ORIGIN"],
@@ -683,6 +684,12 @@ function escapeHtml(value) {
 function formatNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? new Intl.NumberFormat().format(number) : "—";
+}
+
+function tripCountCell(value, row) {
+  const trip = state.data?.trips?.find((item) => String(item.id) === String(row.id));
+  const tripCount = value ?? trip?.trip_count;
+  return tripCount == null ? "—" : formatNumber(tripCount);
 }
 
 function formatCurrency(value) {
@@ -1228,7 +1235,8 @@ function renderDashboard() {
         ["model", "Model"],
         ["status", "Status", statusBadge],
       ], null, { empty: "No trucks registered" }), "vehicles")}
-      ${panel("Recent trips", tableMarkup(data.trips.slice(0, 5), [
+      ${panel("Recent trips", tableMarkup(data.trips.slice(-5), [
+        ["trip_count", "Trip Count", tripCountCell],
         ["origin", "Origin"],
         ["destination", "Destination"],
         ["plate_number", "Plate no"],
@@ -1598,6 +1606,7 @@ function filterRows(rows, columns) {
 }
 
 const TRIP_HISTORY_COLUMNS = [
+  ["trip_count", "Trip Count", (value) => value != null ? formatNumber(value) : "—"],
   ["ism_no", "ISM No"],
   ["shipment_date", "Shipment date"],
   ["origin", "Route", (origin, trip) =>
@@ -3591,26 +3600,39 @@ function tripReportRouteKey(identifier, origin, destination) {
 }
 
 function tripReportGroupedTables(records, groupBy) {
-  const headers = [
-    "Trip ID", "Trip Date", "Driver", "Truck", "Trailer", "Shipment / ISM",
-    "Origin", "Destination", "Time In", "Time Out", "Distance", "Revenue",
+  const tripHeaders = [
+    "Trip Count", "Trip Date", "Driver", "Truck", "Trailer", "Shipment / ISM",
+    "Origin", "Destination", "Time In", "Time Out",
   ];
-  const tripTable = (groupTrips) => `
+  const tripTable = (groupTrips, includeRoute = false) => {
+    const headers = [
+      ...(includeRoute ? ["Route", "Route Description"] : []),
+      ...tripHeaders,
+    ];
+    const routeLookup = new Map(
+      routes.map((route) => [route.key, route]),
+    );
+    return `
     <div class="table-wrap trip-report-preview-wrap"><table class="trip-record-table">
       <thead><tr>${headers.map((label) => `<th>${label}</th>`).join("")}</tr></thead>
-      <tbody>${groupTrips.map((item) => `<tr>
-        <td>${escapeHtml(item.id || "—")}</td>
+      <tbody>${groupTrips.map((item) => {
+        const route = routeLookup.get(tripReportRouteKey(
+          tripReportRouteIdentifier(item), item.origin, item.destination,
+        ));
+        return `<tr>
+        ${includeRoute ? `<td>${escapeHtml(route?.label || "—")}</td><td>${escapeHtml(route ? `${route.origin} → ${route.destination}` : "—")}</td>` : ""}
+        <td>${escapeHtml(item.trip_count == null ? "—" : formatNumber(item.trip_count))}</td>
         <td>${escapeHtml(item.trip_date || item.shipment_date || "—")}</td>
         <td>${escapeHtml(item.driver_name || "—")}</td>
         <td>${escapeHtml(item.truck_plate || "—")}</td>
         <td>${escapeHtml(item.trailer_plate || "—")}</td>
-        <td>${escapeHtml(item.ism_no || item.id || "—")}</td>
+        <td>${escapeHtml(item.ism_no || "—")}</td>
         <td>${escapeHtml(item.origin || "—")}</td><td>${escapeHtml(item.destination || "—")}</td>
         <td>${escapeHtml(item.time_in || "—")}</td><td>${escapeHtml(item.time_out || "—")}</td>
-        <td>${item.distance == null ? "—" : `${formatNumber(item.distance)} km`}</td>
-        <td>${item.trip_revenue == null ? "—" : escapeHtml(formatCurrency(item.trip_revenue))}</td>
-      </tr>`).join("")}</tbody>
+      </tr>`;
+      }).join("")}</tbody>
     </table></div>`;
+  };
 
   const routeGroups = new Map();
   for (const trip of records) {
@@ -3648,7 +3670,7 @@ function tripReportGroupedTables(records, groupBy) {
           <td>${escapeHtml(route.label)}</td>
           <td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td>
           <td>${formatNumber(route.records.length)}</td>
-          <td>${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(route.revenue)) : "N/A"}</td>
+          <td>${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(route.revenue)) : "—"}</td>
         </tr>`).join("")}</tbody>
       </table></div>
     </section>`;
@@ -3659,7 +3681,6 @@ function tripReportGroupedTables(records, groupBy) {
       ${routes.map((route) => `
         <section class="trip-report-driver-group">
           <h4>${escapeHtml(`${route.label}: ${route.origin} → ${route.destination}`)}</h4>
-          <p class="trip-report-route-totals">Total Trips: ${formatNumber(route.records.length)} · Total Revenue: ${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(route.revenue)) : "N/A"}</p>
           ${tripTable(route.records)}
         </section>`).join("")}
     </section>`;
@@ -3681,19 +3702,18 @@ function tripReportGroupedTables(records, groupBy) {
       }));
     const revenue = tripReportRevenueTotal(driver.records);
     return `<section class="trip-report-section trip-report-driver-section">
-      <h3>Driver: ${escapeHtml(driver.name)}</h3>
-      <p class="trip-report-route-totals">Total Trips: ${formatNumber(driver.records.length)} · Unique Routes: ${formatNumber(routeRows.length)} · Total Revenue: ${driver.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(revenue)) : "N/A"}</p>
-      ${tripTable(driver.records)}
+      <h3>Driver: ${escapeHtml(driver.name)} <span>(${formatNumber(driver.records.length)} trips)</span></h3>
+      ${tripTable(driver.records, true)}
       <h4>Movement Summary</h4>
       <div class="table-wrap"><table class="trip-record-table trip-report-summary-table">
-        <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th></tr></thead>
+        <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th><th>Total Revenue</th></tr></thead>
         <tbody>${routeRows.map((route) => {
-          return `<tr><td>${escapeHtml(route.label)}</td><td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td><td>${formatNumber(route.records.length)}</td></tr>`;
+          return `<tr><td>${escapeHtml(route.label)}</td><td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td><td>${formatNumber(route.records.length)}</td><td>${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(tripReportRevenueTotal(route.records))) : "—"}</td></tr>`;
         }).join("")}</tbody>
       </table></div>
     </section>`;
   }).join("");
-  return `${routeSummary}<section class="trip-report-section"><h3>Per-Driver Trips and Movement</h3>${driverSections}</section>`;
+  return `<section class="trip-report-section"><h3>Per-Driver Trips and Movement</h3>${driverSections}</section>`;
 }
 
 function renderTripReports() {
@@ -3760,7 +3780,6 @@ function renderTripReports() {
         <span>${formatNumber(report.total_unique_routes || 0)} unique routes</span><span>·</span>
         <span>${formatNumber(report.total_drivers || 0)} drivers</span><span>·</span>
         <span>Total trip revenue: ${report.summary?.revenue_trip_count ? formatCurrency(report.summary.total_revenue) : "N/A"}</span><span>·</span>
-        <span>${formatNumber(report.summary?.total_distance || 0)} km measured</span>
         ${report.summary?.average_revenue_per_trip != null ? `<span>·</span><span>Average per revenue trip: ${formatCurrency(report.summary.average_revenue_per_trip)}</span>` : ""}
         ${report.summary?.distance_trip_count ? `<span>from ${formatNumber(report.summary.distance_trip_count)} trips with odometer readings</span>` : ""}
       </div>
@@ -3921,13 +3940,14 @@ function renderDuplicateTripSettings() {
             </div>
             <div class="table-wrap">
               <table class="data-table trip-duplicate-table">
-                <thead><tr><th scope="col">Trip</th><th scope="col">Shipment date</th><th scope="col">Route</th><th scope="col">Driver</th><th scope="col">Truck / trailer</th><th scope="col">Decision</th></tr></thead>
+                <thead><tr><th scope="col">Trip Count</th><th scope="col">Trip ID</th><th scope="col">Shipment date</th><th scope="col">Route</th><th scope="col">Driver</th><th scope="col">Truck / trailer</th><th scope="col">Decision</th></tr></thead>
                 <tbody>${group.trips.map((trip) => {
                   const keeperId = duplicateScan.keepers[group.key];
                   const isKeeper = String(keeperId) === String(trip.id);
                   const canDelete = keeperId && !isKeeper;
                   return `<tr class="${isKeeper ? "trip-duplicate-keeper" : ""}">
-                    <td data-label="Trip">#${escapeHtml(trip.id)}</td>
+                    <td data-label="Trip Count">${trip.trip_count == null ? "—" : formatNumber(trip.trip_count)}</td>
+                    <td data-label="Trip ID">#${escapeHtml(trip.id)}</td>
                     <td data-label="Shipment date">${escapeHtml(trip.shipment_date || trip.trip_date || "—")}</td>
                     <td data-label="Route">${escapeHtml([trip.origin, trip.destination].filter(Boolean).join(" → ") || "—")}</td>
                     <td data-label="Driver">${escapeHtml(trip.driver_name || "—")}</td>
@@ -3972,6 +3992,7 @@ function renderTripRecords() {
       : records.records.length
         ? `<div class="table-wrap trip-record-table-wrap"><table class="trip-record-table">
           <thead><tr>
+            <th scope="col">Trip Count</th>
             ${tripRecordSortButton("Trip ID", "trip_id")}
             <th scope="col">ISM Number</th>
             ${tripRecordSortButton("Origin", "origin")}
@@ -3986,6 +4007,7 @@ function renderTripRecords() {
             ${tripRecordSortButton("Date Recorded", "recorded_at")}
           </tr></thead><tbody>${records.records.map((record) => `
             <tr tabindex="0" role="button" class="clickable-row" data-action="trip-record-detail" data-id="${escapeHtml(record.id)}" aria-label="View trip ${escapeHtml(record.ism_no || record.id)} details">
+              <td data-label="Trip Count">${(record.trip_count ?? record.details?.trip_count) == null ? "—" : formatNumber(record.trip_count ?? record.details?.trip_count)}</td>
               <td data-label="Trip ID">${escapeHtml(record.id)}</td>
               <td data-label="ISM Number">${escapeHtml(record.ism_no || "—")}</td>
               <td data-label="Origin">${escapeHtml(record.origin || "—")}</td>
@@ -4065,6 +4087,7 @@ function openTripRecordDetails(recordId) {
   const details = record.details || {};
   const fields = [
     ["Trip ID", record.id],
+    ["Trip Count", record.trip_count ?? details.trip_count],
     ["ISM number", record.ism_no],
     ["Trip status", tripRecordStatusLabel(record.status)],
     ["Date recorded", record.date_recorded],
@@ -5791,6 +5814,7 @@ function revenuePerformanceMarkup(report) {
 
 function revenueRecentTripsMarkup(report) {
   const columns = [
+    ["trip_count", "Trip Count", tripCountCell],
     ["shipment_date", "Trip date"],
     ["id", "Trip ID"],
     ["ism_no", "ISM / reference"],
@@ -5815,6 +5839,7 @@ function revenueLedgerMarkup(report) {
   const ledger = report.ledger || { items: [], page: 1, page_size: 25, total: 0 };
   const items = ledger.items || [];
   const columns = [
+    ["trip_count", "Trip Count", tripCountCell],
     ["shipment_date", "Trip date"],
     ["id", "Trip ID", (value, row) => `<button class="text-button revenue-trip-link" type="button" data-action="revenue-trip-details" data-id="${escapeHtml(value)}">${escapeHtml(value)}</button>`],
     ["ism_no", "ISM / reference"],
@@ -6754,6 +6779,7 @@ function openTripDetails(tripId) {
   dialog.querySelector("#trip-details-title").textContent = title;
   state.editingTrip = trip;
   const detailFields = [
+    ["Trip Count", trip.trip_count == null ? "—" : formatNumber(trip.trip_count)],
     ["Shipment date", trip.shipment_date],
     ["Time in", trip.time_in],
     ["Time out", trip.time_out],

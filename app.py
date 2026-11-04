@@ -4272,7 +4272,7 @@ def export_trip_history() -> Any:
     search_term = request.args.get("search", "").strip().casefold()
     if search_term:
         searchable_fields = (
-            "ism_no", "shipment_date", "time_in", "time_out", "origin",
+            "trip_count", "ism_no", "shipment_date", "time_in", "time_out", "origin",
             "destination", "plate_number", "load_details", "driver_name", "trip_fuel",
         )
         trips = [

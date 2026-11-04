@@ -115,6 +115,20 @@ class FleetManager:
                     "supabase_trips_migration.sql in the Supabase SQL Editor, "
                     "then refresh the app."
                 ) from exc
+            missing_trip_count = (
+                "trip_count" in combined_error
+                and (
+                    "does not exist" in combined_error
+                    or "schema cache" in combined_error
+                    or "could not find" in combined_error
+                )
+            )
+            if missing_trip_count:
+                raise FleetManagementError(
+                    "Trip counts are not installed. Run "
+                    "Sql snippets/supabase_trip_count_migration.sql in the "
+                    "Supabase SQL Editor, then refresh the app."
+                ) from exc
             if "column fuel_logs.trip_id does not exist" in combined_error:
                 raise FleetManagementError(
                     "Fuel logs are not linked to trips in Supabase. Run "
@@ -1343,7 +1357,7 @@ class FleetManager:
         rows = self._related_list(
             "trips",
             "*,driver:drivers(name),truck:vehicles!trips_truck_id_fkey(plate_number,make,model),trailer:trailers(plate_number,pallet_capacity,trailer_type,status)",
-            ("shipment_date", "desc"),
+            ("trip_count", "asc"),
             owner_id=user_id,
             filters=date_filters,
         )

@@ -22,6 +22,13 @@ by default, and remembers the selected theme in the browser.
    does not add missing columns to an existing table. If the app reports that
    `fuel_logs.trip_id` does not exist, run this migration in the SQL Editor and
    refresh the app.
+5. After the trips table has been created and its existing trip migrations have
+   been applied, run
+   [`supabase_trip_count_migration.sql`](./Sql%20snippets/supabase_trip_count_migration.sql)
+   in the Supabase SQL Editor. It assigns permanent trip counts in creation-time
+   order when `created_at` exists; on the original schema, which has no trip
+   creation timestamp, it uses the identity trip ID as the insertion-order
+   fallback. It also installs the database trigger and unique index.
 5. Copy `.env.example` to `.env`.
 6. Fill in `SUPABASE_URL`, `SUPABASE_ANON_KEY`, and
    `SUPABASE_SERVICE_ROLE_KEY` from the project's API settings. The anon or
@@ -213,13 +220,16 @@ cost scope misleading.
 ## Administrator Trip Records
 
 After applying the dispatcher ownership, fuel allocation, truck/trailer,
-Revenue dashboard, and location-dispatch migrations, run
+Revenue dashboard, location-dispatch, and trip-count migrations, run
 [`supabase_trip_records_migration.sql`](./supabase_trip_records_migration.sql)
 in the Supabase SQL Editor. This adds administrator-only trip read access and
-the server-side paginated Trip Records RPC. Then run
+the server-side paginated Trip Records RPC. Re-run it when updating an existing
+project so its RPC includes the trip count. Then run
 [`supabase_trip_reports_migration.sql`](./supabase_trip_reports_migration.sql)
-to add the administrator-only report filters and paginated report RPCs. Restart
-Flask after applying the migrations and installing dependencies from
+to add the administrator-only report filters and paginated report RPCs; re-run
+it on existing projects after the trip-count migration to update its returned
+Trip Count and chronological sort. Restart Flask after applying the migrations
+and installing dependencies from
 `requirements.txt`.
 
 Administrators can open Trip Records from Operations → Trip operations to

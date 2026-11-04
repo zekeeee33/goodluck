@@ -1390,10 +1390,18 @@ tbody tr:hover { background: var(--table-hover); }
 }
 
 @media print {
+  @page { size: landscape; margin: 8mm; }
   .sidebar, .topbar, .footer, .toast-region, .page-heading-actions, .theme-toggle { display: none !important; }
   .main-column { margin: 0; }
   .main-content { width: 100%; min-height: 0; padding: 0; }
-  .panel, .stat-card { break-inside: avoid; box-shadow: none; }
+  .trip-report-panel { margin: 0; padding: 0; overflow: visible; border: 0; box-shadow: none; }
+  .trip-report-actions, .trip-report-filter-disclosure, .trip-report-panel > .panel-heading .trip-report-actions { display: none !important; }
+  .trip-report-preview, .trip-report-preview-wrap, .trip-report-preview .table-wrap { max-height: none !important; overflow: visible !important; }
+  .trip-report-preview .trip-record-table { min-width: 0 !important; width: 100%; font-size: 8pt; }
+  .trip-report-preview .trip-record-table th,
+  .trip-report-preview .trip-record-table td { padding: 3px 4px; }
+  .trip-report-section, .trip-report-driver-group { break-inside: avoid-page; }
+  .panel, .stat-card { box-shadow: none; }
   body { background: white; color: black; }
 }
 

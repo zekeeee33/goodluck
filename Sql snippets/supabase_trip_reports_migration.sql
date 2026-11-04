@@ -143,6 +143,7 @@ begin
     with all_records as (
         select
             trip.id,
+            trip.trip_count,
             trip.ism_no,
             coalesce(trip.shipment_date, trip.record_date) as trip_date,
             trip.shipment_date,
@@ -290,9 +291,8 @@ begin
                     case when p_report_type = 'route' then
                         coalesce(route_number::text, nullif(trim(route_pair), ''),
                             nullif(trim(route), '')) end asc nulls last,
-                    case when p_report_type = 'date' then trip_date end asc nulls last,
-                    trip_date desc nulls last,
-                    id desc
+                    trip_count asc nulls last,
+                    id asc
             ) as row_order
         from filtered_records
     )
@@ -300,6 +300,7 @@ begin
         'records', coalesce((
             select jsonb_agg(jsonb_build_object(
                 'id', record.id,
+                'trip_count', record.trip_count,
                 'ism_no', record.ism_no,
                 'trip_date', record.trip_date,
                 'shipment_date', record.shipment_date,

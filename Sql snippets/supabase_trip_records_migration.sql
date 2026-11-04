@@ -49,6 +49,7 @@ begin
     with all_records as (
         select
             trip.id,
+            trip.trip_count,
             trip.ism_no,
             trip.origin,
             trip.destination,
@@ -187,6 +188,7 @@ begin
         'records', coalesce((
             select jsonb_agg(jsonb_build_object(
                 'id', record.id,
+                'trip_count', record.trip_count,
                 'ism_no', record.ism_no,
                 'origin', record.origin,
                 'destination', record.destination,

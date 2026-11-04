@@ -530,6 +530,7 @@ class AdminTripReportsTests(unittest.TestCase):
         trips = [
             {
                 "id": index + 1,
+                "trip_count": index + 1,
                 "shipment_date": "2026-01-05",
                 "ism_no": f"ISM-{index + 1}",
                 "driver_name": "Report Driver",
@@ -548,7 +549,7 @@ class AdminTripReportsTests(unittest.TestCase):
             for index in range(100)
         ]
         second_page = {
-            "records": [{**trips[0], "id": 101, "ism_no": "ISM-101"}],
+            "records": [{**trips[0], "id": 101, "trip_count": 101, "ism_no": "ISM-101"}],
             "total": 101,
             "summary": {"total_trips": 101, "total_distance": 5050, "distance_trip_count": 101},
         }
@@ -580,32 +581,42 @@ class AdminTripReportsTests(unittest.TestCase):
             workbook.sheetnames,
             [
                 "Overall Summary", "Route Summaries", "Route Details",
-                "Driver Reports", "All Trips", "By Driver", "By Origin",
+                "Driver - Report Driver", "All Trips", "By Origin",
                 "By Destination", "By Truck", "By Trailer",
             ],
         )
         sheet = workbook["All Trips"]
-        self.assertEqual(sheet["A11"].value, "Trip ID")
+        self.assertEqual(sheet["A11"].value, "Trip Count")
+        self.assertEqual(sheet["B11"].value, "Trip Date")
         self.assertEqual(sheet["A12"].value, 1)
         self.assertEqual(sheet["A112"].value, 101)
+        self.assertEqual(sheet["H12"].value.strftime("%Y-%m-%d"), "2026-01-05")
+        self.assertEqual(sheet["H112"].value.strftime("%Y-%m-%d"), "2026-01-05")
         self.assertEqual(sheet["B5"].value, 101)
-        self.assertEqual(sheet["B6"].value, 5050)
-        self.assertEqual(sheet["B7"].value, 101 * 1847)
-        self.assertEqual(sheet["B8"].value, 1847)
+        self.assertEqual(sheet["B6"].value, 101 * 1847)
+        self.assertEqual(sheet["B7"].value, 1847)
         self.assertEqual(sheet.freeze_panes, "A12")
-        self.assertEqual(len(workbook["By Driver"].tables), 2)
+        self.assertEqual(len(workbook["Driver - Report Driver"].tables), 2)
         self.assertEqual(len(workbook["By Truck"].tables), 1)
         self.assertEqual(len(workbook["By Trailer"].tables), 1)
-        driver_sheet = workbook["By Driver"]
-        self.assertEqual(driver_sheet["A5"].value.split(" · ")[0], "101 matching trips")
-        self.assertEqual(driver_sheet["A7"].value, "REPORT DRIVER (101 trips)")
-        self.assertEqual(driver_sheet["A8"].value, "TRIP ID")
-        self.assertEqual(driver_sheet["B8"].value, "TRIP DATE")
-        self.assertEqual(driver_sheet["M8"].value, "TRIP REVENUE")
-        self.assertEqual(driver_sheet["A9"].value, 1)
+        driver_sheet = workbook["Driver - Report Driver"]
+        self.assertEqual(driver_sheet["A5"].value, "Report Driver | Total Trips: 101")
+        self.assertEqual(driver_sheet["A7"].value, "Route")
+        self.assertEqual(driver_sheet["B7"].value, "Route Description")
+        self.assertEqual(driver_sheet["C7"].value, "Trip Count")
+        self.assertEqual(driver_sheet["D7"].value, "Trip Date")
+        self.assertEqual(driver_sheet["M7"].value, "Time Out")
+        self.assertEqual(driver_sheet["A8"].value, "Route 3")
+        self.assertEqual(driver_sheet["C8"].value, 1)
+        self.assertEqual(driver_sheet["J8"].value.strftime("%Y-%m-%d"), "2026-01-05")
+        self.assertEqual(driver_sheet.page_setup.orientation, "landscape")
+        self.assertEqual(str(driver_sheet.page_setup.paperSize), driver_sheet.PAPERSIZE_A4)
+        self.assertEqual(driver_sheet.page_setup.fitToWidth, 1)
+        self.assertEqual(driver_sheet.page_setup.fitToHeight, 0)
+        self.assertLessEqual(driver_sheet.page_margins.left, 0.25)
         movement_title_row = next(
             row for row in range(1, driver_sheet.max_row + 1)
-            if driver_sheet.cell(row=row, column=1).value == "MOVEMENT SUMMARY"
+            if driver_sheet.cell(row=row, column=1).value == "Movement Summary"
         )
         self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=1).value, "Route 3")
         self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=3).value, 101)
@@ -757,6 +768,7 @@ class AdminTripReportsTests(unittest.TestCase):
             [
                 {
                     "id": 21,
+                    "trip_count": 3,
                     "driver_id": 2,
                     "driver_name": "Jane Doe",
                     "truck_id": 7,
@@ -772,6 +784,7 @@ class AdminTripReportsTests(unittest.TestCase):
                 },
                 {
                     "id": 20,
+                    "trip_count": 2,
                     "driver_id": 1,
                     "driver_name": "John Doe",
                     "truck_id": 8,
@@ -787,6 +800,7 @@ class AdminTripReportsTests(unittest.TestCase):
                 },
                 {
                     "id": 22,
+                    "trip_count": 1,
                     "driver_id": 1,
                     "driver_name": "John Doe",
                     "truck_id": 8,
@@ -815,30 +829,54 @@ class AdminTripReportsTests(unittest.TestCase):
             workbook.sheetnames,
             [
                 "Overall Summary", "Route Summaries", "Route Details",
-                "Driver Reports", "All Trips", "By Driver", "By Origin",
+                "Driver - Jane Doe", "Driver - John Doe", "All Trips", "By Origin",
                 "By Destination", "By Truck", "By Trailer",
             ],
         )
-        worksheet = workbook["By Driver"]
-        self.assertEqual(len(worksheet.tables), 4)
-        self.assertEqual(worksheet["A7"].value, "JANE DOE (1 trip)")
-        self.assertEqual(worksheet["A8"].value, "TRIP ID")
-        self.assertEqual(worksheet["A9"].value, 21)
-        self.assertEqual(worksheet["E9"].value, "TRL-22")
-        self.assertEqual(worksheet["A11"].value, "MOVEMENT SUMMARY")
-        self.assertEqual(worksheet["A12"].value, "Route")
-        self.assertEqual(worksheet["C13"].value, 1)
-        self.assertEqual(worksheet["A17"].value, "JOHN DOE (2 trips)")
-        self.assertEqual(worksheet["A18"].value, "TRIP ID")
-        self.assertEqual(worksheet["A19"].value, 20)
-        self.assertEqual(worksheet["A20"].value, 22)
+        jane_sheet = workbook["Driver - Jane Doe"]
+        john_sheet = workbook["Driver - John Doe"]
+        self.assertEqual(len(jane_sheet.tables), 2)
+        self.assertEqual(len(john_sheet.tables), 2)
+        self.assertEqual(jane_sheet["A5"].value, "Jane Doe | Total Trips: 1")
+        self.assertEqual(jane_sheet["A7"].value, "Route")
+        self.assertEqual(jane_sheet["B7"].value, "Route Description")
+        self.assertEqual(jane_sheet["C7"].value, "Trip Count")
+        self.assertEqual(jane_sheet["D7"].value, "Trip Date")
+        self.assertEqual(jane_sheet["A8"].value, "Route 2")
+        self.assertEqual(jane_sheet["C8"].value, 3)
+        self.assertEqual(jane_sheet["D8"].value.strftime("%Y-%m-%d"), "2026-01-01")
+        jane_summary_row = next(
+            row for row in range(1, jane_sheet.max_row + 1)
+            if jane_sheet.cell(row=row, column=1).value == "Movement Summary"
+        )
+        self.assertGreater(jane_summary_row, 8)
+        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=1).value, "Route 2")
+        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=3).value, 1)
+        self.assertEqual(john_sheet["A5"].value, "John Doe | Total Trips: 2")
+        self.assertEqual(john_sheet["A8"].value, "Route 1")
+        self.assertEqual(john_sheet["C8"].value, 1)
+        self.assertEqual(john_sheet["D8"].value.strftime("%Y-%m-%d"), "2026-01-03")
+        self.assertEqual(john_sheet["C9"].value, 2)
+        self.assertEqual(john_sheet["D9"].value.strftime("%Y-%m-%d"), "2026-01-02")
         self.assertEqual(len(workbook["By Origin"].tables), 2)
         self.assertEqual(len(workbook["By Destination"].tables), 2)
         self.assertEqual(len(workbook["By Truck"].tables), 2)
         self.assertEqual(len(workbook["By Trailer"].tables), 2)
         all_trips = workbook["All Trips"]
-        self.assertEqual(float(all_trips["B7"].value), 300.10)
-        self.assertAlmostEqual(float(all_trips["B8"].value), 150.05)
+        self.assertEqual(
+            [all_trips.cell(row=row, column=1).value for row in range(12, 15)],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            [john_sheet.cell(row=row, column=3).value for row in (8, 9)],
+            [
+                all_trips.cell(row=row, column=1).value
+                for row in range(12, 15)
+                if all_trips.cell(row=row, column=3).value == "John Doe"
+            ],
+        )
+        self.assertEqual(float(all_trips["B6"].value), 300.10)
+        self.assertAlmostEqual(float(all_trips["B7"].value), 150.05)
         route_summary = workbook["Route Summaries"]
         self.assertEqual(route_summary["A6"].value, "Route 1")
         self.assertEqual(route_summary["E6"].value, 2)
@@ -847,11 +885,46 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(workbook["Overall Summary"]["B5"].value, 3)
         self.assertEqual(workbook["Overall Summary"]["B6"].value, 2)
         self.assertEqual(workbook["Overall Summary"]["B7"].value, 2)
-        self.assertEqual(workbook["Route Details"]["A5"].value.startswith("Route 1:"), True)
-        self.assertEqual(workbook["Driver Reports"]["A5"].value.startswith("Jane Doe"), True)
-        self.assertEqual(workbook["Driver Reports"]["A9"].value, "Movement Summary")
-        self.assertEqual(workbook["Driver Reports"]["A11"].value, "Route 1")
-        self.assertEqual(workbook["Driver Reports"]["C11"].value, 1)
+        self.assertEqual(
+            workbook["Route Details"]["A5"].value,
+            "Route 1: Davao → Manila",
+        )
+        self.assertEqual(workbook["Route Details"]["C6"].value, "Trip Count")
+        route_detail_headers = [
+            workbook["Route Details"].cell(row=6, column=column).value
+            for column in range(3, workbook["Route Details"].max_column + 1)
+        ]
+        self.assertNotIn("Trip ID", route_detail_headers)
+        driver_report_headers = [
+            workbook["Driver - Jane Doe"].cell(row=7, column=column).value
+            for column in range(1, workbook["Driver - Jane Doe"].max_column + 1)
+        ]
+        self.assertNotIn("Trip ID", driver_report_headers)
+        for removed_header in (
+            "Starting Odometer", "Ending Odometer", "Total Distance",
+            "Trip Fuel", "Notes", "Gross Trip Revenue",
+        ):
+            self.assertNotIn(removed_header, route_detail_headers)
+        all_report_values = {
+            str(cell.value)
+            for worksheet in workbook.worksheets
+            for row in worksheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        }
+        for removed_header in (
+            "Starting Odometer", "Ending Odometer", "Total Distance",
+            "Trip Fuel", "Notes", "Gross Trip Revenue",
+        ):
+            self.assertNotIn(removed_header, all_report_values)
+        self.assertFalse(any(
+            value.startswith("Route ") and "Revenue:" in value
+            for value in all_report_values
+        ))
+        for worksheet in workbook.worksheets:
+            self.assertEqual(worksheet.page_setup.orientation, "landscape")
+            self.assertEqual(worksheet.page_setup.fitToWidth, 1)
+            self.assertEqual(worksheet.page_setup.fitToHeight, 0)
 
     def test_driver_report_groups_trips_by_normalized_name_not_driver_id(self):
         from trip_report_utils import group_trip_records
@@ -3590,6 +3663,7 @@ class FleetManagerTests(unittest.TestCase):
             vehicle["id"], driver["id"], "Manila to Cavite", 100, 150,
             origin="Manila", destination="Cavite",
         )
+        self.client.tables["trips"][0]["trip_count"] = 1
         web_app.manager = self.manager
         web_app.app.config["TESTING"] = True
         client = web_app.app.test_client()
@@ -3616,7 +3690,9 @@ class FleetManagerTests(unittest.TestCase):
         self.assertEqual(workbook["Fuel Logs"]["G5"].value, 3012.5)
         self.assertIn("₱", workbook["Fuel Logs"]["G5"].number_format)
         self.assertEqual(workbook["Maintenance"]["E5"].data_type, "s")
-        self.assertEqual(workbook["Trips"]["G5"].value, "Manila")
+        self.assertEqual(workbook["Trips"]["A4"].value, "Trip Count")
+        self.assertEqual(workbook["Trips"]["A5"].value, 1)
+        self.assertEqual(workbook["Trips"]["H5"].value, "Manila")
 
     def test_web_export_handles_fuel_logs_without_total_cost(self):
         vehicle = self.manager.add_vehicle("XLS-FUEL-NULL", "Toyota", "Hiace", 2024)
@@ -3665,6 +3741,7 @@ class FleetManagerTests(unittest.TestCase):
             load_details="12 cartons",
             trip_fuel="Diesel",
         )
+        self.client.tables["trips"][0]["trip_count"] = 1
         self.client.tables["trips"][0].update({
             "route_number": 3,
             "route_pair": "DAV1 ↔ PLAS",
@@ -3688,17 +3765,18 @@ class FleetManagerTests(unittest.TestCase):
         workbook = load_workbook(BytesIO(response.data), data_only=True)
         self.assertEqual(workbook.sheetnames, ["Trip History"])
         trips = workbook["Trip History"]
-        self.assertEqual(trips["B4"].value, "Ism No")
-        self.assertEqual(trips["B5"].value, "ISM-TRIP-1")
-        self.assertEqual(trips["F5"].value, "Manila")
-        self.assertEqual(trips["H5"].value, "TRIP-XLS-1")
-        self.assertEqual(trips["K5"].value, "Trip Export Driver")
-        self.assertEqual(trips["C5"].number_format, "yyyy-mm-dd")
-        self.assertEqual(trips["D5"].number_format, "hh:mm")
+        self.assertEqual(trips["A4"].value, "Trip Count")
+        self.assertEqual(trips["A5"].value, 1)
+        self.assertEqual(trips["C5"].value, "ISM-TRIP-1")
+        self.assertEqual(trips["G5"].value, "Manila")
+        self.assertEqual(trips["I5"].value, "TRIP-XLS-1")
+        self.assertEqual(trips["L5"].value, "Trip Export Driver")
+        self.assertEqual(trips["D5"].number_format, "yyyy-mm-dd")
+        self.assertEqual(trips["E5"].number_format, "hh:mm")
         self.assertEqual(trips.freeze_panes, "A5")
-        self.assertEqual(trips.auto_filter.ref, "A4:Y5")
-        self.assertEqual(trips["Q5"].value, 1847)
-        self.assertIn("₱", trips["Q5"].number_format)
+        self.assertEqual(trips.auto_filter.ref, "A4:Z5")
+        self.assertEqual(trips["R5"].value, 1847)
+        self.assertIn("₱", trips["R5"].number_format)
 
     def test_web_fuel_log_export_returns_print_ready_excel(self):
         vehicle = self.manager.add_vehicle("FUEL-XLS-1", "Toyota", "Hiace", 2024)
@@ -3761,6 +3839,7 @@ class FleetManagerTests(unittest.TestCase):
             origin="Manila",
             destination="Cavite",
         )
+        self.client.tables["trips"][0]["trip_count"] = 1
         self.manager.add_trip(
             vehicle["id"],
             second_driver["id"],
@@ -3771,6 +3850,7 @@ class FleetManagerTests(unittest.TestCase):
             origin="Cavite",
             destination="Manila",
         )
+        self.client.tables["trips"][1]["trip_count"] = 2
         web_app.manager = self.manager
         web_app.app.config["TESTING"] = True
         client = web_app.app.test_client()
@@ -3783,7 +3863,8 @@ class FleetManagerTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         workbook = load_workbook(BytesIO(response.data), data_only=True)
         self.assertEqual(workbook.sheetnames, ["Alpha Driver"])
-        self.assertEqual(workbook["Alpha Driver"]["B5"].value, "MATCH-TRIP")
+        self.assertEqual(workbook["Alpha Driver"]["A5"].value, 1)
+        self.assertEqual(workbook["Alpha Driver"]["C5"].value, "MATCH-TRIP")
 
     def test_cli_export_report_defaults_to_excel_file(self):
         from fleet_management import _build_cli

@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from decimal import Decimal
 from html import escape
 from io import BytesIO
 from typing import Any
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import A3, landscape
+from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.platypus import (
@@ -34,31 +33,31 @@ def build_trip_pdf_report(
 ) -> BytesIO:
     trips = completed_trip_records(trips)
     output = BytesIO()
-    page_width, _ = landscape(A3)
+    page_width, _ = landscape(A4)
     document = SimpleDocTemplate(
         output,
-        pagesize=landscape(A3),
-        rightMargin=10 * mm,
-        leftMargin=10 * mm,
-        topMargin=12 * mm,
-        bottomMargin=16 * mm,
+        pagesize=landscape(A4),
+        rightMargin=7 * mm,
+        leftMargin=7 * mm,
+        topMargin=8 * mm,
+        bottomMargin=9 * mm,
         title=str(metadata.get("title") or "Trip Report"),
         author="Fleet Management System",
     )
     styles = getSampleStyleSheet()
     title_style = ParagraphStyle(
         "TripReportTitle", parent=styles["Title"], fontName="Helvetica-Bold",
-        fontSize=17, leading=20, textColor=colors.HexColor("#17365D"),
-        alignment=TA_LEFT, spaceAfter=2 * mm,
+        fontSize=14, leading=16, textColor=colors.HexColor("#17365D"),
+        alignment=TA_LEFT, spaceAfter=1 * mm,
     )
     small_style = ParagraphStyle(
-        "TripReportSmall", parent=styles["Normal"], fontSize=8, leading=11,
+        "TripReportSmall", parent=styles["Normal"],         fontSize=7, leading=8,
         textColor=colors.HexColor("#475569"),
     )
     group_style = ParagraphStyle(
         "TripReportGroup", parent=styles["Heading2"], fontName="Helvetica-Bold",
-        fontSize=10, leading=13, textColor=colors.HexColor("#17365D"),
-        spaceBefore=3 * mm, spaceAfter=2 * mm, keepWithNext=True,
+        fontSize=9, leading=10, textColor=colors.HexColor("#17365D"),
+        spaceBefore=2 * mm, spaceAfter=1 * mm, keepWithNext=True,
     )
     summary_label_style = ParagraphStyle(
         "TripReportSummaryLabel", parent=styles["Normal"], fontName="Helvetica-Bold",
@@ -70,7 +69,7 @@ def build_trip_pdf_report(
         alignment=TA_CENTER,
     )
     cell_style = ParagraphStyle(
-        "TripReportCell", parent=styles["Normal"], fontSize=5.5, leading=7,
+        "TripReportCell", parent=styles["Normal"],         fontSize=6, leading=7,
         wordWrap="CJK",
     )
     header_style = ParagraphStyle(
@@ -80,7 +79,7 @@ def build_trip_pdf_report(
     summary = summarize_trip_records(trips)
     grouping = str(metadata.get("group_by") or metadata.get("report_type") or "all")
     title = str(metadata.get("title") or "Trip Report")
-    available_width = page_width - 20 * mm
+    available_width = page_width - 14 * mm
     average_revenue = summary["average_revenue_per_trip"]
     routes = group_trip_records_by_route(trips)
     drivers = group_trip_records_by_driver(trips)
@@ -99,7 +98,6 @@ def build_trip_pdf_report(
                 Paragraph("COMPLETED TRIPS", summary_label_style),
                 Paragraph("UNIQUE ROUTES", summary_label_style),
                 Paragraph("DRIVERS", summary_label_style),
-                Paragraph("TOTAL DISTANCE", summary_label_style),
                 Paragraph("TOTAL GROSS TRIP REVENUE", summary_label_style),
                 Paragraph("AVERAGE GROSS REVENUE / VALID TRIP", summary_label_style),
             ], [
@@ -107,21 +105,16 @@ def build_trip_pdf_report(
                 Paragraph(f"{len(routes):,}", summary_value_style),
                 Paragraph(f"{len(drivers):,}", summary_value_style),
                 Paragraph(
-                    f"{summary['total_distance']:,.1f} km "
-                    f"({summary['distance_trip_count']} measured)",
-                    summary_value_style,
-                ),
-                Paragraph(
                     f"PHP {summary['total_revenue']:,.2f}"
-                    if summary["revenue_trip_count"] else "N/A",
+                    if summary["revenue_trip_count"] else "—",
                     summary_value_style,
                 ),
                 Paragraph(
-                    f"PHP {average_revenue:,.2f}" if average_revenue is not None else "N/A",
+                    f"PHP {average_revenue:,.2f}" if average_revenue is not None else "—",
                     summary_value_style,
                 ),
             ]],
-            colWidths=[available_width / 6] * 6,
+            colWidths=[available_width / 5] * 5,
             style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
                 ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#EAF1F8")),
@@ -135,9 +128,7 @@ def build_trip_pdf_report(
         Spacer(1, 3 * mm),
     ]
 
-    natural_widths = [
-        15, 20, 24, 19, 19, 23, 23, 18, 18, 17, 21, 19, 18, 15, 15, 27, 28, 23,
-    ]
+    natural_widths = [12, 21, 30, 25, 20, 26, 26, 20, 18, 15, 15, 30]
     scale = available_width / sum(natural_widths)
     table_widths = [width * scale for width in natural_widths]
     headers = [label for _, label in TRIP_REPORT_FIELDS]
@@ -159,47 +150,66 @@ def build_trip_pdf_report(
             Paragraph(str(route_totals["total_trips"]), cell_style),
             Paragraph(
                 f"PHP {route_totals['total_revenue']:,.2f}"
-                if route_totals["revenue_trip_count"] else "N/A",
+                if route_totals["revenue_trip_count"] else "—",
                 cell_style,
             ),
         ])
-    story.extend([
-        Paragraph("Route Summary", group_style),
-        Table(
-            route_summary_rows,
-            colWidths=[
-                available_width * 0.18,
-                available_width * 0.48,
-                available_width * 0.14,
-                available_width * 0.20,
-            ],
-            repeatRows=1,
-            style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
-                    colors.white, colors.HexColor("#EAF1F8"),
+    if grouping != "driver":
+        story.extend([
+            Paragraph("Route Summary", group_style),
+            Table(
+                route_summary_rows,
+                colWidths=[
+                    available_width * 0.18,
+                    available_width * 0.48,
+                    available_width * 0.14,
+                    available_width * 0.20,
+                ],
+                repeatRows=1,
+                style=TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
+                        colors.white, colors.HexColor("#EAF1F8"),
+                    ]),
+                    ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                    ("TOPPADDING", (0, 0), (-1, -1), 4),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
                 ]),
-                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ]),
-        ),
-        Spacer(1, 3 * mm),
-    ])
+            ),
+            Spacer(1, 3 * mm),
+        ])
 
-    def trip_table(group_trips: list[dict[str, Any]]) -> LongTable:
-        table_rows = [[Paragraph(escape(label), header_style) for label in headers]]
+    def trip_table(
+        group_trips: list[dict[str, Any]],
+        include_route: bool = False,
+    ) -> LongTable:
+        route_lookup = {
+            id(trip): route
+            for route in routes
+            for trip in route["trips"]
+        }
+        table_headers = (
+            ["Route", "Route Description"] if include_route else []
+        ) + headers
+        table_rows = [[
+            Paragraph(escape(label), header_style) for label in table_headers
+        ]]
         for trip in group_trips:
             row = []
+            if include_route:
+                route = route_lookup[id(trip)]
+                row.extend([
+                    Paragraph(escape(route["label"]), cell_style),
+                    Paragraph(
+                        escape(f"{route['origin']} → {route['destination']}"),
+                        cell_style,
+                    ),
+                ])
             for field, _ in TRIP_REPORT_FIELDS:
                 value = trip.get(field)
-                if field == "trip_revenue" and value is not None:
-                    value = f"PHP {Decimal(str(value)):,.2f}"
-                elif field in {"start_odometer", "end_odometer", "distance"} and value is not None:
-                    value = f"{Decimal(str(value)):,.1f}"
                 row.append(Paragraph(
                     escape(str(value if value not in (None, "") else "-")),
                     cell_style,
@@ -207,7 +217,11 @@ def build_trip_pdf_report(
             table_rows.append(row)
         report_table = LongTable(
             table_rows,
-            colWidths=table_widths,
+            colWidths=(
+                [available_width * 0.08, available_width * 0.18]
+                + [width * 0.74 for width in table_widths]
+                if include_route else table_widths
+            ),
             repeatRows=1,
             splitByRow=1,
             hAlign="LEFT",
@@ -226,41 +240,27 @@ def build_trip_pdf_report(
         ]))
         return report_table
 
-    for route in routes:
-        group_trips = route["trips"]
-        group_summary = summarize_trip_records(group_trips)
-        story.append(Paragraph(
-            f"{escape(route['label'])}: "
-            f"{escape(route['origin'])} → {escape(route['destination'])} | "
-            f"{group_summary['total_trips']} "
-            f"{'trip' if group_summary['total_trips'] == 1 else 'trips'} | "
-            "Gross revenue: "
-            + (
-                f"PHP {group_summary['total_revenue']:,.2f}"
-                if group_summary["revenue_trip_count"] else "N/A"
-            ),
-            group_style,
-        ))
-        story.append(trip_table(group_trips))
-        story.append(Spacer(1, 2 * mm))
-
     if grouping == "driver":
-        story.append(Paragraph("Per-Driver Route Breakdown", group_style))
+        story.append(Paragraph("Per-Driver Trips and Movement", group_style))
         for driver_name, driver_trips in drivers:
-            driver_routes = group_trip_records_by_route(driver_trips)
+            driver_trip_ids = {id(trip) for trip in driver_trips}
+            driver_routes = [
+                {
+                    **route,
+                    "trips": [
+                        trip for trip in route["trips"]
+                        if id(trip) in driver_trip_ids
+                    ],
+                }
+                for route in routes
+                if any(id(trip) in driver_trip_ids for trip in route["trips"])
+            ]
             driver_summary = summarize_trip_records(driver_trips)
             story.append(Paragraph(
-                f"Driver: {escape(driver_name)} | "
-                f"{driver_summary['total_trips']} trips | "
-                f"{len(driver_routes)} routes | "
-                "Gross revenue: "
-                + (
-                    f"PHP {driver_summary['total_revenue']:,.2f}"
-                    if driver_summary["revenue_trip_count"] else "N/A"
-                ),
+                f"Driver: {escape(driver_name)} | {driver_summary['total_trips']} trips",
                 group_style,
             ))
-            story.append(trip_table(driver_trips))
+            story.append(trip_table(driver_trips, include_route=True))
             movement_rows = [[
                 Paragraph("Route", header_style),
                 Paragraph("Route Description", header_style),
@@ -278,7 +278,7 @@ def build_trip_pdf_report(
                     Paragraph(str(route_summary["total_trips"]), cell_style),
                     Paragraph(
                         f"PHP {route_summary['total_revenue']:,.2f}"
-                        if route_summary["revenue_trip_count"] else "N/A",
+                        if route_summary["revenue_trip_count"] else "—",
                         cell_style,
                     ),
                 ])
@@ -308,15 +308,24 @@ def build_trip_pdf_report(
                 ),
                 Spacer(1, 3 * mm),
             ])
+    else:
+        for route in routes:
+            group_trips = route["trips"]
+            story.append(Paragraph(
+                f"{escape(route['label'])}: "
+                f"{escape(route['origin'])} → {escape(route['destination'])}",
+                group_style,
+            ))
+            story.append(trip_table(group_trips))
+            story.append(Spacer(1, 2 * mm))
 
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph(
         f"Overall total: {summary['total_trips']} trips | "
-        f"{summary['total_distance']:,.1f} km | "
         "Gross trip revenue: "
         + (
             f"PHP {summary['total_revenue']:,.2f}"
-            if summary["revenue_trip_count"] else "N/A"
+            if summary["revenue_trip_count"] else "—"
         ),
         group_style,
     ))
@@ -325,8 +334,8 @@ def build_trip_pdf_report(
         canvas.saveState()
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#64748B"))
-        canvas.drawString(10 * mm, 8 * mm, "Fleet Management System - Trip Report")
-        canvas.drawRightString(page_width - 10 * mm, 8 * mm, f"Page {doc.page}")
+        canvas.drawString(7 * mm, 6 * mm, "Fleet Management System - Trip Report")
+        canvas.drawRightString(page_width - 7 * mm, 6 * mm, f"Page {doc.page}")
         canvas.restoreState()
 
     document.build(story, onFirstPage=draw_page, onLaterPages=draw_page)

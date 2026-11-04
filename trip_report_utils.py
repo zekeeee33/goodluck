@@ -5,24 +5,18 @@ from decimal import Decimal
 from typing import Any
 
 TRIP_REPORT_FIELDS = (
-    ("id", "Trip ID"),
+    ("trip_count", "Trip Count"),
     ("trip_date", "Trip Date"),
     ("driver_name", "Driver Name"),
     ("truck_plate", "Truck / Vehicle"),
     ("trailer_plate", "Trailer"),
     ("origin", "Origin"),
     ("destination", "Destination"),
-    ("start_odometer", "Starting Odometer"),
-    ("end_odometer", "Ending Odometer"),
-    ("distance", "Total Distance"),
-    ("trip_fuel", "Trip Fuel"),
     ("shipment_date", "Shipment Date"),
     ("ism_no", "ISM Number"),
     ("time_in", "Time In"),
     ("time_out", "Time Out"),
     ("load_details", "Load Details"),
-    ("notes", "Notes"),
-    ("trip_revenue", "Gross Trip Revenue"),
 )
 
 
@@ -77,10 +71,27 @@ def _trip_group_label(trip: dict[str, Any], group_by: str) -> str:
     raise ValueError(f"Unsupported trip report grouping: {group_by}")
 
 
+def order_trip_records(
+    trips: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    indexed_trips = list(enumerate(trips))
+
+    def sort_key(item: tuple[int, dict[str, Any]]) -> tuple[bool, int, int]:
+        index, trip = item
+        try:
+            trip_count = int(trip["trip_count"])
+        except (KeyError, TypeError, ValueError):
+            return (True, index, index)
+        return (False, trip_count, index)
+
+    return [trip for _, trip in sorted(indexed_trips, key=sort_key)]
+
+
 def group_trip_records(
     trips: list[dict[str, Any]],
     group_by: str,
 ) -> list[tuple[str, list[dict[str, Any]]]]:
+    trips = order_trip_records(trips)
     if group_by == "all":
         return [(TRIP_REPORT_GROUPINGS[group_by], trips)]
 
@@ -107,7 +118,7 @@ def group_trip_records(
         label = labels[key]
         if label_counts[label.casefold()] > 1 and key[0] == "id":
             label = f"{label} (ID: {key[1]})"
-        result.append((label, groups[key]))
+        result.append((label, order_trip_records(groups[key])))
     return result
 
 
@@ -127,7 +138,7 @@ def completed_trip_records(
         trip_id = trip.get("id")
         identity = f"id:{trip_id}" if trip_id is not None else f"row:{index}"
         unique_trips.setdefault(identity, trip)
-    return list(unique_trips.values())
+    return order_trip_records(list(unique_trips.values()))
 
 
 def _route_identifier(trip: dict[str, Any]) -> str:
@@ -142,6 +153,7 @@ def _route_identifier(trip: dict[str, Any]) -> str:
 def group_trip_records_by_route(
     trips: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    trips = order_trip_records(trips)
     groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
     labels: dict[tuple[str, str, str], tuple[str, str, str]] = {}
     for trip in trips:
