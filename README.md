@@ -49,11 +49,11 @@ After creating and verifying one of the authorized admin users
 first if payroll has not already been set up, then run
 [`supabase_completed_trips_migration.sql`](./Sql%20snippets/supabase_completed_trips_migration.sql)
 in the SQL Editor. The migration binds access to that account's immutable
-Supabase user ID, creates the private completed-trip table and private image
-bucket, and applies owner-only row and storage policies. It fails rather than
-reassigning access if the verified account is missing or the database is
-already bound to a different user ID. Reapply the same migration to confirm its
-account binding and refresh its policies.
+Supabase user ID (and includes every verified account on the authorized list),
+creates the private completed-trip table and private image bucket, and applies
+owner-only row and storage policies. Reapply the same migration after adding or
+verifying an authorized account so its user ID is enabled and policies are
+refreshed. Reapplying does not reassign existing trip ownership.
 
 The feature uses the existing Supabase session and anon key from the server;
 the browser receives no database credentials. Flask verifies the live,
@@ -254,9 +254,10 @@ Cancelled, incomplete, and duplicate trip records are excluded from report
 totals and details. Excel includes overall, route-summary, route-detail, and
 per-driver worksheets alongside the existing grouping worksheets. The
 per-driver movement summary follows the driver's trip records; PDF exports
-follow the same order. Both pages are
-read-only and do not change existing trip-entry, dispatch, arrival, or
-financial workflows.
+follow the same order. Excel and PDF exports include the company logo and the
+Dragon Commercial Complex address in Tacurong; the on-screen preview does not.
+The logo is stored at `static/report-logo.png`. The report pages are read-only and
+do not change existing trip-entry, dispatch, arrival, or financial workflows.
 
 Create trucks and trailers separately in Fleet Management. Select an eligible
 truck and an active trailer when dispatching a trip; the trailer's configured

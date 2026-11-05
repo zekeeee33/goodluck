@@ -9,6 +9,7 @@ from reportlab.lib.enums import TA_CENTER, TA_LEFT
 from reportlab.lib.pagesizes import A4, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
+from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     LongTable,
     Paragraph,
@@ -18,6 +19,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from report_branding import REPORT_ADDRESS, report_logo_path
 from trip_report_utils import (
     TRIP_REPORT_FIELDS,
     completed_trip_records,
@@ -33,13 +35,13 @@ def build_trip_pdf_report(
 ) -> BytesIO:
     trips = completed_trip_records(trips)
     output = BytesIO()
-    page_width, _ = landscape(A4)
+    page_width, page_height = landscape(A4)
     document = SimpleDocTemplate(
         output,
         pagesize=landscape(A4),
         rightMargin=7 * mm,
         leftMargin=7 * mm,
-        topMargin=8 * mm,
+        topMargin=30 * mm,
         bottomMargin=9 * mm,
         title=str(metadata.get("title") or "Trip Report"),
         author="Fleet Management System",
@@ -332,6 +334,24 @@ def build_trip_pdf_report(
 
     def draw_page(canvas: Any, doc: Any) -> None:
         canvas.saveState()
+        logo_width, logo_height = ImageReader(report_logo_path()).getSize()
+        rendered_logo_width = 42 * mm
+        canvas.drawImage(
+            report_logo_path(),
+            7 * mm,
+            page_height - 27 * mm,
+            width=rendered_logo_width,
+            height=rendered_logo_width * logo_height / logo_width,
+            preserveAspectRatio=True,
+            mask="auto",
+        )
+        canvas.setFont("Helvetica", 9)
+        canvas.setFillColor(colors.HexColor("#475569"))
+        canvas.drawRightString(
+            page_width - 7 * mm,
+            page_height - 14 * mm,
+            REPORT_ADDRESS,
+        )
         canvas.setFont("Helvetica", 7)
         canvas.setFillColor(colors.HexColor("#64748B"))
         canvas.drawString(7 * mm, 6 * mm, "Fleet Management System - Trip Report")

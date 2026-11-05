@@ -11,6 +11,7 @@ from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
+from report_branding import add_excel_report_branding
 from trip_report_utils import (
     TRIP_REPORT_FIELDS,
     TRIP_REPORT_GROUPINGS,
@@ -207,6 +208,7 @@ def build_excel_report(report: dict[str, Any]) -> BytesIO:
         ]
         format_sheet(workbook.create_sheet(sheet_title), sheet_title, headers, rows)
 
+    add_excel_report_branding(workbook)
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -339,6 +341,7 @@ def build_trip_excel_report(
         worksheet.title = "Trip History"
         worksheet.append(["No trips match the selected view"])
 
+    add_excel_report_branding(workbook)
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -860,6 +863,7 @@ def build_filtered_trip_excel_report(
                 f"A1:{get_column_letter(worksheet.max_column)}{worksheet.max_row}"
             )
 
+    add_excel_report_branding(workbook)
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -979,6 +983,7 @@ def build_fuel_excel_report(fuel_logs: list[dict[str, Any]]) -> BytesIO:
             max(max(map(len, values_for_width), default=0) + 2, 12), 36
         )
 
+    add_excel_report_branding(workbook)
     output = BytesIO()
     workbook.save(output)
     output.seek(0)
@@ -1486,6 +1491,7 @@ def build_payroll_excel_report(
         driver_sheet.print_area = f"A1:F{final_row}"
         driver_sheet.sheet_properties.pageSetUpPr.autoPageBreaks = False
 
+    add_excel_report_branding(workbook)
     output = BytesIO()
     workbook.save(output)
     output.seek(0)

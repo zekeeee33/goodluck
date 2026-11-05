@@ -5,14 +5,20 @@ create table if not exists public.completed_trip_access (
     user_id uuid not null unique references auth.users(id) on delete restrict
 );
 
+create table if not exists public.completed_trip_access_users (
+    user_id uuid primary key references auth.users(id) on delete restrict
+);
+
 alter table public.completed_trip_access enable row level security;
 alter table public.completed_trip_access no force row level security;
 revoke all on table public.completed_trip_access from public, anon, authenticated;
+alter table public.completed_trip_access_users enable row level security;
+alter table public.completed_trip_access_users no force row level security;
+revoke all on table public.completed_trip_access_users from public, anon, authenticated;
 
 do $$
 declare
     intended_user_id uuid;
-    configured_user_id uuid;
 begin
     select id into intended_user_id
     from auth.users
@@ -39,14 +45,16 @@ begin
     values (true, intended_user_id)
     on conflict (singleton) do nothing;
 
-    select user_id into configured_user_id
-    from public.completed_trip_access
-    where singleton;
-
-    if configured_user_id is distinct from intended_user_id then
-        raise exception
-            'Completed Trip access is already bound to a different Supabase account ID';
-    end if;
+    insert into public.completed_trip_access_users (user_id)
+    select id
+    from auth.users
+    where lower(btrim(email)) in (
+        'sceratoconcepts@gmail.com',
+        'besaneszyxa1984@gmail.com',
+        'glfsadmin@glfs.org'
+    )
+      and email_confirmed_at is not null
+    on conflict (user_id) do nothing;
 end;
 $$;
 
@@ -60,8 +68,8 @@ as $$
     select auth.uid() is not null
        and exists (
            select 1
-           from public.completed_trip_access
-           where singleton and user_id = auth.uid()
+           from public.completed_trip_access_users
+           where user_id = auth.uid()
        )
        and exists (
            select 1

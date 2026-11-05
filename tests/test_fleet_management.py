@@ -14,7 +14,14 @@ from fleet_management import FleetManagementError, FleetManager, _supabase_proje
 from manifest_ocr import canonical_warehouse_code, extract_manifest_fields, truck_route_rate
 from openpyxl import load_workbook
 from payroll import calculate_driver_payroll, period_date, trip_rate
+from report_branding import REPORT_ADDRESS
 from werkzeug.exceptions import MethodNotAllowed
+
+
+def assert_excel_report_branding(test_case, workbook):
+    for worksheet in workbook.worksheets:
+        test_case.assertEqual(worksheet["B2"].value, REPORT_ADDRESS)
+        test_case.assertEqual(len(worksheet._images), 1)
 
 
 class TripDeletionTests(unittest.TestCase):
@@ -243,7 +250,8 @@ class AdminTripRecordsTests(unittest.TestCase):
 
     def test_trip_records_migration_has_admin_rls_and_read_only_rpc(self):
         migration_path = os.path.join(
-            os.path.dirname(__file__), "..", "supabase_trip_records_migration.sql"
+            os.path.dirname(__file__), "..", "Sql snippets",
+            "supabase_trip_records_migration.sql",
         )
         with open(migration_path, encoding="utf-8") as migration_file:
             migration = migration_file.read()
@@ -252,6 +260,8 @@ class AdminTripRecordsTests(unittest.TestCase):
         self.assertIn("using (public.dispatch_is_admin())", migration)
         self.assertIn("if auth.uid() is null or not public.dispatch_is_admin()", migration)
         self.assertIn("security definer", migration)
+        self.assertIn("if p_page is null or p_page < 1", migration)
+        self.assertNotIn("p_page < 14", migration)
         self.assertIn("p_page_size not in (10, 25, 50, 100)", migration)
         self.assertIn("'pending_arrivals'", migration)
 
@@ -577,6 +587,7 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertIn("Trip_Report_2026-01-01.xlsx", response.headers["Content-Disposition"])
         self.assertEqual(rpc.call_count, 2)
         workbook = load_workbook(BytesIO(response.data), data_only=True)
+        assert_excel_report_branding(self, workbook)
         self.assertEqual(
             workbook.sheetnames,
             [
@@ -743,6 +754,8 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertIn('type="checkbox" data-trip-report-filter="${key}"', app_js)
         self.assertIn('tripReportFilterSelect("trailer_ids", "Trailers"', app_js)
         self.assertIn("tripReportGroupedTables(report.records, report.report_type)", app_js)
+        self.assertNotIn("tripReportLetterhead", app_js)
+        self.assertNotIn('/static/report-logo.png', app_js)
         self.assertIn("Export to Excel (.xlsx)", app_js)
         self.assertIn("Export to PDF (.pdf)", app_js)
         self.assertIn("Generating Excel…", app_js)
@@ -1491,8 +1504,8 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('tailwind.generated.css?v=completed-trip-transfer-1', index_html)
-        self.assertIn('app.js?v=completed-trip-transfer-6', index_html)
+        self.assertIn('tailwind.generated.css?v=trip-report-branding-2', index_html)
+        self.assertIn('app.js?v=completed-trip-transfer-8', index_html)
         self.assertIn("dispatch-historical-records", app_js)
         self.assertIn("Scroll horizontally to review all trip fields.", app_js)
         self.assertIn("function dispatchCompletedMovementListItem(movement)", app_js)
@@ -2112,7 +2125,8 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertEqual(trips["C6"].value, "ISM-XLS-MATCH")
         self.assertEqual(trips["F6"].value, 200)
         payslip = workbook["Payslip Excel Payroll Driver"]
-        self.assertEqual(payslip["A1"].value, "EMPLOYEE PAYSLIP")
+        assert_excel_report_branding(self, workbook)
+        self.assertEqual(payslip["B1"].value, "EMPLOYEE PAYSLIP")
         self.assertEqual(payslip["B7"].value, "Excel Payroll Driver")
         self.assertEqual(payslip["B12"].value, "ISM-XLS-MATCH")
         self.assertEqual(payslip["E12"].value, 200)
@@ -2444,6 +2458,20 @@ class CompletedTripAccessTests(unittest.TestCase):
         )
         with open(migration_path, encoding="utf-8") as migration_file:
             migration = migration_file.read()
+        self.assertIn(
+            "create table if not exists public.completed_trip_access_users",
+            migration.lower(),
+        )
+        self.assertIn(
+            "insert into public.completed_trip_access_users (user_id)",
+            migration.lower(),
+        )
+        access_function = migration.lower().split(
+            "create or replace function public.completed_trip_access_allowed()",
+            1,
+        )[1].split("$$;", 1)[0]
+        self.assertIn("from public.completed_trip_access_users", access_function)
+        self.assertNotIn("from public.completed_trip_access\n", access_function)
         self.assertIn(
             "add column if not exists completed_trip_id bigint",
             migration,
@@ -3678,6 +3706,7 @@ class FleetManagerTests(unittest.TestCase):
         )
         self.assertIn("fleet_system_report.xlsx", response.headers["Content-Disposition"])
         workbook = load_workbook(BytesIO(response.data), data_only=True)
+        assert_excel_report_branding(self, workbook)
         self.assertEqual(
             workbook.sheetnames,
             ["Dashboard", "Vehicles", "Trailers", "Drivers", "Assignments", "Maintenance", "Fuel Logs", "Trips"],
@@ -3714,6 +3743,7 @@ class FleetManagerTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         workbook = load_workbook(BytesIO(response.data), data_only=True)
+        assert_excel_report_branding(self, workbook)
         fuel_logs = workbook["Fuel Logs"]
         self.assertIsNone(fuel_logs["G5"].value)
         actual_expense_column = next(
@@ -3763,6 +3793,7 @@ class FleetManagerTests(unittest.TestCase):
         )
         self.assertIn("trip_history.xlsx", response.headers["Content-Disposition"])
         workbook = load_workbook(BytesIO(response.data), data_only=True)
+        assert_excel_report_branding(self, workbook)
         self.assertEqual(workbook.sheetnames, ["Trip History"])
         trips = workbook["Trip History"]
         self.assertEqual(trips["A4"].value, "Trip Count")
@@ -3813,6 +3844,7 @@ class FleetManagerTests(unittest.TestCase):
         )
         self.assertIn("fuel_logs.xlsx", response.headers["Content-Disposition"])
         workbook = load_workbook(BytesIO(response.data), data_only=True)
+        assert_excel_report_branding(self, workbook)
         self.assertEqual(workbook.sheetnames, ["Fuel Logs"])
         fuel_logs = workbook["Fuel Logs"]
         self.assertEqual(fuel_logs["A5"].value.strftime("%Y-%m-%d"), "2026-10-05")

@@ -37,7 +37,7 @@ begin
     if auth.uid() is null or not public.dispatch_is_admin() then
         raise exception 'Only administrators can view trip records';
     end if;
-    if p_page is null or p_page < 14
+    if p_page is null or p_page < 1
        or p_page_size is null or p_page_size not in (10, 25, 50, 100) then
         raise exception 'Invalid trip records page request';
     end if;
