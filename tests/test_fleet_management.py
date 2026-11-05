@@ -613,13 +613,16 @@ class AdminTripReportsTests(unittest.TestCase):
         driver_sheet = workbook["Driver - Report Driver"]
         self.assertEqual(driver_sheet["A5"].value, "Report Driver | Total Trips: 101")
         self.assertEqual(driver_sheet["A7"].value, "Route")
-        self.assertEqual(driver_sheet["B7"].value, "Route Description")
-        self.assertEqual(driver_sheet["C7"].value, "Trip Count")
-        self.assertEqual(driver_sheet["D7"].value, "Trip Date")
-        self.assertEqual(driver_sheet["M7"].value, "Time Out")
+        self.assertEqual(driver_sheet["B7"].value, "Origin")
+        self.assertEqual(driver_sheet["C7"].value, "Destination")
+        self.assertEqual(driver_sheet["D7"].value, "Trip Count")
+        self.assertEqual(driver_sheet["E7"].value, "Trip Date")
+        self.assertEqual(driver_sheet["L7"].value, "Time Out")
         self.assertEqual(driver_sheet["A8"].value, "Route 3")
-        self.assertEqual(driver_sheet["C8"].value, 1)
-        self.assertEqual(driver_sheet["J8"].value.strftime("%Y-%m-%d"), "2026-01-05")
+        self.assertEqual(driver_sheet["B8"].value, "Manila")
+        self.assertEqual(driver_sheet["C8"].value, "Cavite")
+        self.assertEqual(driver_sheet["D8"].value, 1)
+        self.assertEqual(driver_sheet["I8"].value.strftime("%Y-%m-%d"), "2026-01-05")
         self.assertEqual(driver_sheet.page_setup.orientation, "landscape")
         self.assertEqual(str(driver_sheet.page_setup.paperSize), driver_sheet.PAPERSIZE_A4)
         self.assertEqual(driver_sheet.page_setup.fitToWidth, 1)
@@ -630,7 +633,9 @@ class AdminTripReportsTests(unittest.TestCase):
             if driver_sheet.cell(row=row, column=1).value == "Movement Summary"
         )
         self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=1).value, "Route 3")
-        self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=3).value, 101)
+        self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=2).value, "Manila")
+        self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=3).value, "Cavite")
+        self.assertEqual(driver_sheet.cell(row=movement_title_row + 2, column=4).value, 101)
         self.assertEqual(driver_sheet.freeze_panes, "A8")
 
     def test_report_export_fetches_all_pages_beyond_ten_thousand_rows(self):
@@ -852,25 +857,30 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(len(john_sheet.tables), 2)
         self.assertEqual(jane_sheet["A5"].value, "Jane Doe | Total Trips: 1")
         self.assertEqual(jane_sheet["A7"].value, "Route")
-        self.assertEqual(jane_sheet["B7"].value, "Route Description")
-        self.assertEqual(jane_sheet["C7"].value, "Trip Count")
-        self.assertEqual(jane_sheet["D7"].value, "Trip Date")
+        self.assertEqual(jane_sheet["B7"].value, "Origin")
+        self.assertEqual(jane_sheet["C7"].value, "Destination")
+        self.assertEqual(jane_sheet["D7"].value, "Trip Count")
+        self.assertEqual(jane_sheet["E7"].value, "Trip Date")
         self.assertEqual(jane_sheet["A8"].value, "Route 2")
-        self.assertEqual(jane_sheet["C8"].value, 3)
-        self.assertEqual(jane_sheet["D8"].value.strftime("%Y-%m-%d"), "2026-01-01")
+        self.assertEqual(jane_sheet["B8"].value, "Manila")
+        self.assertEqual(jane_sheet["C8"].value, "Cavite")
+        self.assertEqual(jane_sheet["D8"].value, 3)
+        self.assertEqual(jane_sheet["E8"].value.strftime("%Y-%m-%d"), "2026-01-01")
         jane_summary_row = next(
             row for row in range(1, jane_sheet.max_row + 1)
             if jane_sheet.cell(row=row, column=1).value == "Movement Summary"
         )
         self.assertGreater(jane_summary_row, 8)
         self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=1).value, "Route 2")
-        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=3).value, 1)
+        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=2).value, "Manila")
+        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=3).value, "Cavite")
+        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=4).value, 1)
         self.assertEqual(john_sheet["A5"].value, "John Doe | Total Trips: 2")
         self.assertEqual(john_sheet["A8"].value, "Route 1")
-        self.assertEqual(john_sheet["C8"].value, 1)
-        self.assertEqual(john_sheet["D8"].value.strftime("%Y-%m-%d"), "2026-01-03")
-        self.assertEqual(john_sheet["C9"].value, 2)
-        self.assertEqual(john_sheet["D9"].value.strftime("%Y-%m-%d"), "2026-01-02")
+        self.assertEqual(john_sheet["D8"].value, 1)
+        self.assertEqual(john_sheet["E8"].value.strftime("%Y-%m-%d"), "2026-01-03")
+        self.assertEqual(john_sheet["D9"].value, 2)
+        self.assertEqual(john_sheet["E9"].value.strftime("%Y-%m-%d"), "2026-01-02")
         self.assertEqual(len(workbook["By Origin"].tables), 2)
         self.assertEqual(len(workbook["By Destination"].tables), 2)
         self.assertEqual(len(workbook["By Truck"].tables), 2)
@@ -881,7 +891,7 @@ class AdminTripReportsTests(unittest.TestCase):
             [1, 2, 3],
         )
         self.assertEqual(
-            [john_sheet.cell(row=row, column=3).value for row in (8, 9)],
+            [john_sheet.cell(row=row, column=4).value for row in (8, 9)],
             [
                 all_trips.cell(row=row, column=1).value
                 for row in range(12, 15)
@@ -898,21 +908,35 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(workbook["Overall Summary"]["B5"].value, 3)
         self.assertEqual(workbook["Overall Summary"]["B6"].value, 2)
         self.assertEqual(workbook["Overall Summary"]["B7"].value, 2)
+        overall_summary = workbook["Overall Summary"]
+        self.assertEqual(
+            [overall_summary.cell(row=12, column=column).value for column in range(1, 6)],
+            ["Route", "Origin", "Destination", "Total Trips", "Total Revenue"],
+        )
+        self.assertEqual(overall_summary["B13"].value, "Davao")
+        self.assertEqual(overall_summary["C13"].value, "Manila")
         self.assertEqual(
             workbook["Route Details"]["A5"].value,
-            "Route 1: Davao → Manila",
+            "Route 1 | Origin: Davao | Destination: Manila",
         )
-        self.assertEqual(workbook["Route Details"]["C6"].value, "Trip Count")
+        self.assertEqual(workbook["Route Details"]["B6"].value, "Origin")
+        self.assertEqual(workbook["Route Details"]["C6"].value, "Destination")
+        self.assertEqual(workbook["Route Details"]["D6"].value, "Trip Count")
         route_detail_headers = [
             workbook["Route Details"].cell(row=6, column=column).value
-            for column in range(3, workbook["Route Details"].max_column + 1)
+            for column in range(4, workbook["Route Details"].max_column + 1)
         ]
         self.assertNotIn("Trip ID", route_detail_headers)
+        self.assertNotIn("Origin", route_detail_headers)
+        self.assertNotIn("Destination", route_detail_headers)
         driver_report_headers = [
             workbook["Driver - Jane Doe"].cell(row=7, column=column).value
             for column in range(1, workbook["Driver - Jane Doe"].max_column + 1)
         ]
         self.assertNotIn("Trip ID", driver_report_headers)
+        self.assertEqual(driver_report_headers[:3], ["Route", "Origin", "Destination"])
+        self.assertNotIn("Origin", driver_report_headers[3:])
+        self.assertNotIn("Destination", driver_report_headers[3:])
         for removed_header in (
             "Starting Odometer", "Ending Odometer", "Total Distance",
             "Trip Fuel", "Notes", "Gross Trip Revenue",

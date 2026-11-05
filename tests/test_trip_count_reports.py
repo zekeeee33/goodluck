@@ -94,9 +94,11 @@ class TripCountReportTests(unittest.TestCase):
         ))
         worksheet = workbook["Route Details"]
         self.assertEqual(worksheet["B1"].value, "Detailed Route Records")
-        self.assertEqual(worksheet["C6"].value, "Trip Count")
+        self.assertEqual(worksheet["B6"].value, "Origin")
+        self.assertEqual(worksheet["C6"].value, "Destination")
+        self.assertEqual(worksheet["D6"].value, "Trip Count")
         self.assertEqual(
-            [worksheet.cell(row=row, column=3).value for row in range(7, 10)],
+            [worksheet.cell(row=row, column=4).value for row in range(7, 10)],
             [1, 2, 3],
         )
 

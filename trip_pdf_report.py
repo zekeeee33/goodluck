@@ -28,6 +28,12 @@ from trip_report_utils import (
     summarize_trip_records,
 )
 
+ROUTE_DETAIL_FIELDS = tuple(
+    (field, label)
+    for field, label in TRIP_REPORT_FIELDS
+    if field not in {"origin", "destination"}
+)
+
 
 def build_trip_pdf_report(
     trips: list[dict[str, Any]],
@@ -129,15 +135,29 @@ def build_trip_pdf_report(
         ),
         Spacer(1, 3 * mm),
     ]
-
     natural_widths = [12, 21, 30, 25, 20, 26, 26, 20, 18, 15, 15, 30]
     scale = available_width / sum(natural_widths)
     table_widths = [width * scale for width in natural_widths]
-    headers = [label for _, label in TRIP_REPORT_FIELDS]
+    route_detail_natural_widths = [
+        width
+        for (field, _), width in zip(TRIP_REPORT_FIELDS, natural_widths)
+        if field not in {"origin", "destination"}
+    ]
+    route_detail_natural_width_total = sum(route_detail_natural_widths)
+    route_detail_widths = [
+        available_width * 0.08,
+        available_width * 0.22,
+        available_width * 0.22,
+    ] + [
+        available_width * 0.48 * width / route_detail_natural_width_total
+        for (field, _), width in zip(TRIP_REPORT_FIELDS, natural_widths)
+        if field not in {"origin", "destination"}
+    ]
 
     route_summary_rows = [[
         Paragraph("Route", header_style),
-        Paragraph("Route Description", header_style),
+        Paragraph("Origin", header_style),
+        Paragraph("Destination", header_style),
         Paragraph("Total Trips", header_style),
         Paragraph("Total Revenue", header_style),
     ]]
@@ -145,10 +165,8 @@ def build_trip_pdf_report(
         route_totals = summarize_trip_records(route["trips"])
         route_summary_rows.append([
             Paragraph(escape(route["label"]), cell_style),
-            Paragraph(
-                escape(f"{route['origin']} → {route['destination']}"),
-                cell_style,
-            ),
+            Paragraph(escape(route["origin"]), cell_style),
+            Paragraph(escape(route["destination"]), cell_style),
             Paragraph(str(route_totals["total_trips"]), cell_style),
             Paragraph(
                 f"PHP {route_totals['total_revenue']:,.2f}"
@@ -162,10 +180,11 @@ def build_trip_pdf_report(
             Table(
                 route_summary_rows,
                 colWidths=[
-                    available_width * 0.18,
-                    available_width * 0.48,
+                    available_width * 0.12,
+                    available_width * 0.24,
+                    available_width * 0.24,
                     available_width * 0.14,
-                    available_width * 0.20,
+                    available_width * 0.26,
                 ],
                 repeatRows=1,
                 style=TableStyle([
@@ -193,9 +212,10 @@ def build_trip_pdf_report(
             for route in routes
             for trip in route["trips"]
         }
+        fields = ROUTE_DETAIL_FIELDS if include_route else TRIP_REPORT_FIELDS
         table_headers = (
-            ["Route", "Route Description"] if include_route else []
-        ) + headers
+            ["Route", "Origin", "Destination"] if include_route else []
+        ) + [label for _, label in fields]
         table_rows = [[
             Paragraph(escape(label), header_style) for label in table_headers
         ]]
@@ -205,12 +225,10 @@ def build_trip_pdf_report(
                 route = route_lookup[id(trip)]
                 row.extend([
                     Paragraph(escape(route["label"]), cell_style),
-                    Paragraph(
-                        escape(f"{route['origin']} → {route['destination']}"),
-                        cell_style,
-                    ),
+                    Paragraph(escape(route["origin"]), cell_style),
+                    Paragraph(escape(route["destination"]), cell_style),
                 ])
-            for field, _ in TRIP_REPORT_FIELDS:
+            for field, _ in fields:
                 value = trip.get(field)
                 row.append(Paragraph(
                     escape(str(value if value not in (None, "") else "-")),
@@ -219,11 +237,7 @@ def build_trip_pdf_report(
             table_rows.append(row)
         report_table = LongTable(
             table_rows,
-            colWidths=(
-                [available_width * 0.08, available_width * 0.18]
-                + [width * 0.74 for width in table_widths]
-                if include_route else table_widths
-            ),
+            colWidths=route_detail_widths if include_route else table_widths,
             repeatRows=1,
             splitByRow=1,
             hAlign="LEFT",
@@ -265,7 +279,8 @@ def build_trip_pdf_report(
             story.append(trip_table(driver_trips, include_route=True))
             movement_rows = [[
                 Paragraph("Route", header_style),
-                Paragraph("Route Description", header_style),
+                Paragraph("Origin", header_style),
+                Paragraph("Destination", header_style),
                 Paragraph("Total Trips", header_style),
                 Paragraph("Total Revenue", header_style),
             ]]
@@ -273,10 +288,8 @@ def build_trip_pdf_report(
                 route_summary = summarize_trip_records(route["trips"])
                 movement_rows.append([
                     Paragraph(escape(route["label"]), cell_style),
-                    Paragraph(
-                        escape(f"{route['origin']} → {route['destination']}"),
-                        cell_style,
-                    ),
+                    Paragraph(escape(route["origin"]), cell_style),
+                    Paragraph(escape(route["destination"]), cell_style),
                     Paragraph(str(route_summary["total_trips"]), cell_style),
                     Paragraph(
                         f"PHP {route_summary['total_revenue']:,.2f}"
@@ -289,10 +302,11 @@ def build_trip_pdf_report(
                 Table(
                     movement_rows,
                     colWidths=[
-                        available_width * 0.18,
-                        available_width * 0.48,
+                        available_width * 0.12,
+                        available_width * 0.24,
+                        available_width * 0.24,
                         available_width * 0.14,
-                        available_width * 0.20,
+                        available_width * 0.26,
                     ],
                     repeatRows=1,
                     style=TableStyle([
@@ -314,8 +328,8 @@ def build_trip_pdf_report(
         for route in routes:
             group_trips = route["trips"]
             story.append(Paragraph(
-                f"{escape(route['label'])}: "
-                f"{escape(route['origin'])} → {escape(route['destination'])}",
+                f"{escape(route['label'])} | Origin: {escape(route['origin'])} | "
+                f"Destination: {escape(route['destination'])}",
                 group_style,
             ))
             story.append(trip_table(group_trips))
