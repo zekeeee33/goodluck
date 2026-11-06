@@ -908,6 +908,11 @@ button.dispatcher-summary-card:hover { transform: translateY(-1px); border-color
 .trip-record-filters input, .trip-record-filters select { min-height: var(--control-height); padding: 6px 9px; }
 .trip-record-table-wrap { max-height: min(68vh, 760px); overflow: auto; }
 .trip-record-table { min-width: 1540px; }
+.trip-driver-route-summary-panel { margin-top: 15px; }
+.trip-driver-route-summary-note { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
+.trip-driver-route-summary-wrap { overflow-x: auto; }
+.trip-driver-route-summary-table { min-width: 640px; }
+.trip-driver-route-summary-table thead th { text-align: center; }
 .trip-record-sort { padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; font-weight: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
 .trip-record-sort:hover { color: var(--blue); }
 .trip-record-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }

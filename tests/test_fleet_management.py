@@ -264,6 +264,8 @@ class AdminTripRecordsTests(unittest.TestCase):
         self.assertNotIn("p_page < 14", migration)
         self.assertIn("p_page_size not in (10, 25, 50, 100)", migration)
         self.assertIn("'pending_arrivals'", migration)
+        self.assertIn("'driver_route_summary'", migration)
+        self.assertIn("count(*) as total_trips\n        from filtered_records", migration)
 
     def test_trip_records_interface_is_read_only_and_uses_operations_menu(self):
         app_js_path = os.path.join(
@@ -284,6 +286,9 @@ class AdminTripRecordsTests(unittest.TestCase):
             "function openTripRecordDetails", 1
         )[0]
         self.assertIn("Trip Records", trip_records_markup)
+        self.assertIn("renderDriverRouteSummary(records.driverRouteSummary)", trip_records_markup)
+        self.assertIn("Summary per driver", app_js)
+        self.assertIn("No. of Trips", app_js)
         self.assertIn('<details class="trip-record-filter-disclosure"', trip_records_markup)
         self.assertIn('aria-label="Trip record filters"', trip_records_markup)
         self.assertNotIn("trip-duplicate-panel", trip_records_markup)
@@ -1528,8 +1533,8 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('tailwind.generated.css?v=trip-report-branding-2', index_html)
-        self.assertIn('app.js?v=completed-trip-transfer-8', index_html)
+        self.assertIn('tailwind.generated.css?v=driver-route-summary-1', index_html)
+        self.assertIn('app.js?v=driver-route-summary-1', index_html)
         self.assertIn("dispatch-historical-records", app_js)
         self.assertIn("Scroll horizontally to review all trip fields.", app_js)
         self.assertIn("function dispatchCompletedMovementListItem(movement)", app_js)
@@ -3312,6 +3317,39 @@ class FleetManagerTests(unittest.TestCase):
                 pair,
                 {36: rate36, 46: rate46},
             )
+
+    def test_approved_dav2_plas_50_pallet_rate_allows_trip_save(self):
+        self.configure_route(
+            6, "DAV2", "PLAS", "DAV2 ↔ PLAS", {50: "3055.50"}
+        )
+        truck = self.manager.add_vehicle("RATE-50-TRUCK", "Hino", "300", 2024)
+        trailer = self.manager.add_trailer("RATE-50-TRAILER", 50)
+        driver = self.manager.add_driver("50 Pallet Driver", "RATE-50-DL")
+
+        trip = self.manager.add_trip(
+            truck["id"], driver["id"], "DAV2 to PLAS", 0, 0,
+            origin="DAV2", destination="PLAS", require_truck_rate=True,
+            trailer_id=trailer["id"],
+        )
+
+        self.assertEqual(trip["pallet_capacity"], 50)
+        self.assertEqual(trip["truck_route_rate"], "3055.50")
+        self.assertFalse(trip["trip_rate_review_required"])
+
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..", "Sql snippets",
+            "supabase_dav2_plas_50_pallet_rate_migration.sql",
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+        self.assertIn("'DAV2'", migration)
+        self.assertIn("'PLAS'", migration)
+        self.assertIn("    50,\n    3055.50,", migration)
+        self.assertIn("on conflict (origin_code, destination_code, pallet_capacity)", migration)
+        self.assertIn("with matching_trips as", migration)
+        self.assertIn("coalesce(trip.pallet_capacity, trailer.pallet_capacity) = 50", migration)
+        self.assertIn("trip.truck_route_rate is null", migration)
+        self.assertIn("truck_route_rate = matching.hauling_rate", migration)
 
     def test_all_directional_routes_resolve_capacity_specific_rates(self):
         self.configure_all_routes()

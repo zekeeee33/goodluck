@@ -53,6 +53,8 @@ begin
             trip.ism_no,
             trip.origin,
             trip.destination,
+            trip.route_number,
+            trip.route_pair,
             coalesce(nullif(trip.driver_name, ''), driver.name) as driver_name,
             trip.driver_id,
             coalesce(nullif(trip.plate_no, ''), truck.plate_number) as truck_plate,
@@ -156,6 +158,34 @@ begin
         from summary_scope
         where p_status = '' or trip_status = p_status
     ),
+    driver_route_summary as (
+        select
+            coalesce(nullif(trim(driver_name), ''), 'Unassigned driver') as driver_name,
+            route_number,
+            case
+                when route_number is not null then 'Route ' || route_number::text
+                else coalesce(
+                    nullif(trim(route_pair), ''),
+                    'Unknown route'
+                )
+            end as route_label,
+            origin,
+            destination,
+            count(*) as total_trips
+        from filtered_records
+        group by
+            coalesce(nullif(trim(driver_name), ''), 'Unassigned driver'),
+            route_number,
+            case
+                when route_number is not null then 'Route ' || route_number::text
+                else coalesce(
+                    nullif(trim(route_pair), ''),
+                    'Unknown route'
+                )
+            end,
+            origin,
+            destination
+    ),
     page_rows as (
         select ordered.*
         from (
@@ -232,6 +262,23 @@ begin
             )),
             'trips_requiring_review', (select count(*) from summary_scope where requires_review)
         ),
+        'driver_route_summary', coalesce((
+            select jsonb_agg(jsonb_build_object(
+                'driver_name', summary.driver_name,
+                'route_number', summary.route_number,
+                'route_label', summary.route_label,
+                'origin', summary.origin,
+                'destination', summary.destination,
+                'total_trips', summary.total_trips
+            ) order by
+                summary.route_number nulls last,
+                summary.route_label,
+                summary.origin,
+                summary.destination,
+                summary.driver_name
+            )
+            from driver_route_summary as summary
+        ), '[]'::jsonb),
         'filters', jsonb_build_object(
             'origins', coalesce((
                 select jsonb_agg(option_value order by option_value)

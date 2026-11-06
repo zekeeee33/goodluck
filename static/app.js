@@ -366,6 +366,7 @@ const state = {
     records: [],
     total: 0,
     summary: null,
+    driverRouteSummary: [],
     filters: { origins: [], destinations: [], drivers: [], statuses: [] },
     search: "",
     date_from: "",
@@ -3380,6 +3381,7 @@ async function loadTripRecords({ force = false } = {}) {
     records.records = result.records || [];
     records.total = Number(result.total || 0);
     records.summary = result.summary || null;
+    records.driverRouteSummary = result.driver_route_summary || [];
     records.filters = result.filters || records.filters;
   } catch (error) {
     if (key === tripRecordsQueryKey()) records.error = error.message || "Could not load trip records.";
@@ -3414,6 +3416,49 @@ async function scanTripDuplicates() {
       || (state.page === "settings" && state.settings.section === "duplicate-trips")
     ) render();
   }
+}
+
+function renderDriverRouteSummary(rows) {
+  const routes = new Map();
+  const drivers = new Map();
+  for (const row of rows) {
+    const route = {
+      label: row.route_label || "Unknown route",
+      origin: row.origin || "Unknown origin",
+      destination: row.destination || "Unknown destination",
+    };
+    const routeKey = JSON.stringify([route.label, route.origin, route.destination]);
+    routes.set(routeKey, route);
+    const driverName = row.driver_name || "Unassigned driver";
+    if (!drivers.has(driverName)) drivers.set(driverName, new Map());
+    drivers.get(driverName).set(routeKey, Number(row.total_trips) || 0);
+  }
+
+  const routeEntries = [...routes.entries()];
+  const driverEntries = [...drivers.entries()].sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const table = routeEntries.length
+    ? `<div class="trip-driver-route-summary-wrap"><table class="trip-record-table trip-driver-route-summary-table" aria-label="Trip counts by driver and route">
+        <thead>
+          <tr><th scope="col" rowspan="2">Driver</th>${routeEntries.map(([, route]) => `<th scope="col">${escapeHtml(route.label)}</th>`).join("")}<th scope="col" rowspan="2">No. of Trips</th></tr>
+          <tr>${routeEntries.map(([, route]) => `<th scope="col">${escapeHtml(route.origin)} → ${escapeHtml(route.destination)}</th>`).join("")}</tr>
+        </thead>
+        <tbody>${driverEntries.map(([driverName, counts]) => {
+          const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
+          return `<tr>
+            <th scope="row">${escapeHtml(driverName)}</th>
+            ${routeEntries.map(([routeKey]) => `<td>${formatNumber(counts.get(routeKey) || 0)}</td>`).join("")}
+            <td><strong>${formatNumber(total)}</strong></td>
+          </tr>`;
+        }).join("")}</tbody>
+      </table></div>`
+    : '<div class="empty-state"><strong>No trip counts to summarize</strong><small>Trips matching the current filters will appear here.</small></div>';
+
+  return `<section class="panel trip-driver-route-summary-panel" aria-label="Summary per driver">
+    <div class="panel-heading"><div><p class="eyebrow">TRIP COUNTS</p><h2>Summary per driver</h2><p class="trip-driver-route-summary-note">Number of trips made by each driver on each route.</p></div></div>
+    ${table}
+  </section>`;
 }
 
 const TRIP_REPORT_TYPES = {
@@ -4068,6 +4113,7 @@ function renderTripRecords() {
         <button class="button button-secondary button-small" type="button" data-action="trip-record-page" data-page="${Math.min(totalPages, records.page + 1)}" ${records.page >= totalPages ? "disabled" : ""}>Next</button>
       </nav>` : ""}
     </section>
+    ${!records.loading && !records.error ? renderDriverRouteSummary(records.driverRouteSummary) : ""}
     <dialog class="record-dialog trip-record-detail-dialog" aria-labelledby="trip-record-detail-title">
       <div class="dialog-header">
         <div><p class="eyebrow">READ-ONLY TRIP DETAILS</p><h2 id="trip-record-detail-title">Trip details</h2></div>
