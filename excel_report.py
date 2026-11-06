@@ -829,8 +829,105 @@ def build_filtered_trip_excel_report(
                 row_number += 1
             row_number += 1
 
+        summary_last_column = len(headers)
+        if group_by == "all":
+            driver_groups = group_trip_records(trips, "driver")
+            route_groups = group_trip_records_by_route(trips)
+            route_index_by_trip = {
+                id(trip): route_index
+                for route_index, route in enumerate(route_groups)
+                for trip in route["trips"]
+            }
+            summary_last_column = len(route_groups) + 2
+            worksheet.merge_cells(
+                start_row=row_number,
+                start_column=1,
+                end_row=row_number,
+                end_column=summary_last_column,
+            )
+            summary_title = worksheet.cell(
+                row=row_number, column=1, value="Summary Per Driver"
+            )
+            summary_title.font = Font(bold=True, size=12, color="17365D")
+            summary_title.fill = summary_fill
+            row_number += 1
+
+            driver_header = worksheet.cell(row=row_number, column=1, value="Driver")
+            worksheet.merge_cells(
+                start_row=row_number,
+                start_column=1,
+                end_row=row_number + 1,
+                end_column=1,
+            )
+            driver_header.font = Font(bold=True, color="FFFFFF")
+            driver_header.fill = header_fill
+            driver_header.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
+            for route_index, route in enumerate(route_groups, start=2):
+                route_header = worksheet.cell(
+                    row=row_number,
+                    column=route_index,
+                    value=route["label"],
+                )
+                route_header.font = Font(bold=True, color="FFFFFF")
+                route_header.fill = header_fill
+                route_header.alignment = Alignment(
+                    horizontal="center", vertical="center", wrap_text=True
+                )
+                route_detail = worksheet.cell(
+                    row=row_number + 1,
+                    column=route_index,
+                    value=f"{route['origin']} → {route['destination']}",
+                )
+                route_detail.font = Font(bold=True, color="17365D")
+                route_detail.fill = summary_fill
+                route_detail.alignment = Alignment(
+                    horizontal="center", vertical="center", wrap_text=True
+                )
+
+            total_header = worksheet.cell(
+                row=row_number, column=summary_last_column, value="No. of Trips"
+            )
+            worksheet.merge_cells(
+                start_row=row_number,
+                start_column=summary_last_column,
+                end_row=row_number + 1,
+                end_column=summary_last_column,
+            )
+            total_header.font = Font(bold=True, color="FFFFFF")
+            total_header.fill = header_fill
+            total_header.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
+            row_number += 2
+
+            for driver_name, driver_trips in driver_groups:
+                route_counts = [0] * len(route_groups)
+                for trip in driver_trips:
+                    route_counts[route_index_by_trip[id(trip)]] += 1
+                driver_cell = worksheet.cell(
+                    row=row_number, column=1, value=driver_name
+                )
+                driver_cell.alignment = Alignment(vertical="top", wrap_text=True)
+                for route_index, trip_count in enumerate(route_counts, start=2):
+                    count_cell = worksheet.cell(
+                        row=row_number, column=route_index, value=trip_count
+                    )
+                    count_cell.number_format = "#,##0"
+                    count_cell.alignment = Alignment(horizontal="center")
+                total_cell = worksheet.cell(
+                    row=row_number,
+                    column=summary_last_column,
+                    value=len(driver_trips),
+                )
+                total_cell.number_format = "#,##0"
+                total_cell.font = Font(bold=True)
+                total_cell.alignment = Alignment(horizontal="center")
+                row_number += 1
+
         last_row = max(9, row_number - 1)
-        last_column = get_column_letter(len(headers))
+        last_column = get_column_letter(max(len(headers), summary_last_column))
         worksheet.print_area = f"'{sheet_title}'!$A$1:${last_column}${last_row}"
         for column, (field, label) in enumerate(report_fields, start=1):
             values = [label]
@@ -841,6 +938,20 @@ def build_filtered_trip_excel_report(
             )
             worksheet.column_dimensions[get_column_letter(column)].width = min(
                 max(max(map(len, values), default=0) + 2, 12), 40
+            )
+        if group_by == "all":
+            for column in range(2, summary_last_column):
+                worksheet.column_dimensions[get_column_letter(column)].width = max(
+                    worksheet.column_dimensions[get_column_letter(column)].width,
+                    28,
+                )
+            worksheet.column_dimensions[
+                get_column_letter(summary_last_column)
+            ].width = max(
+                worksheet.column_dimensions[
+                    get_column_letter(summary_last_column)
+                ].width,
+                16,
             )
 
     for worksheet in workbook.worksheets:

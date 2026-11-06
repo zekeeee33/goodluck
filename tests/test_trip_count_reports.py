@@ -102,6 +102,47 @@ class TripCountReportTests(unittest.TestCase):
             [1, 2, 3],
         )
 
+    def test_all_trips_sheet_includes_driver_route_matrix_below_records(self):
+        trips = [
+            trip(1, driver="Driver A", origin="DAV1", destination="DAV2"),
+            trip(3, driver="Driver A", origin="DAV1", destination="DAV2"),
+            trip(2, driver="Driver B", origin="DAV1", destination="DAV2"),
+            trip(4, driver="Driver B", origin="DAV2", destination="PLAS"),
+        ]
+        trips[0]["route_number"] = 2
+        trips[1]["route_number"] = 2
+        trips[2]["route_number"] = 2
+        trips[3]["route_number"] = 6
+        for item in trips:
+            item["route_pair"] = f"{item['origin']} ↔ {item['destination']}"
+
+        workbook = load_workbook(build_filtered_trip_excel_report(
+            trips,
+            {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
+        ))
+        worksheet = workbook["All Trips"]
+        summary_title_row = next(
+            row for row in range(1, worksheet.max_row + 1)
+            if worksheet.cell(row=row, column=1).value == "Summary Per Driver"
+        )
+
+        self.assertGreater(summary_title_row, 15)
+        header_row = summary_title_row + 1
+        self.assertEqual(worksheet.cell(row=header_row, column=1).value, "Driver")
+        self.assertEqual(worksheet.cell(row=header_row, column=2).value, "Route 2")
+        self.assertEqual(worksheet.cell(row=header_row + 1, column=2).value, "DAV1 → DAV2")
+        self.assertEqual(worksheet.cell(row=header_row, column=3).value, "Route 6")
+        self.assertEqual(worksheet.cell(row=header_row + 1, column=3).value, "DAV2 → PLAS")
+        self.assertEqual(worksheet.cell(row=header_row, column=4).value, "No. of Trips")
+        self.assertEqual(
+            [worksheet.cell(row=header_row + 2, column=column).value for column in range(1, 5)],
+            ["Driver A", 2, 0, 2],
+        )
+        self.assertEqual(
+            [worksheet.cell(row=header_row + 3, column=column).value for column in range(1, 5)],
+            ["Driver B", 1, 1, 2],
+        )
+
     def test_trip_pdf_export_is_generated_with_trip_count_field(self):
         pdf = build_trip_pdf_report(
             self.trips,
