@@ -357,7 +357,7 @@ def build_filtered_trip_excel_report(
     trips: list[dict[str, Any]],
     metadata: dict[str, Any],
 ) -> BytesIO:
-    trips = completed_trip_records(trips)
+    trips = order_trip_records(trips)
     overall = summarize_trip_records(trips)
     workbook = Workbook()
     workbook.properties.title = str(metadata.get("title") or "Trip Report")
@@ -429,7 +429,7 @@ def build_filtered_trip_excel_report(
     overview.title = "Overall Summary"
     write_sheet_title(overview, "Overall Trip Summary", 4)
     summary_rows = [
-        ("Total completed trips", overall["total_trips"]),
+        ("Total trips", overall["total_trips"]),
         ("Unique routes traveled", len(routes)),
         ("Drivers involved", len(drivers)),
         (

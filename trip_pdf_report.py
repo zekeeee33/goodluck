@@ -22,9 +22,9 @@ from reportlab.platypus import (
 from report_branding import REPORT_ADDRESS, report_logo_path
 from trip_report_utils import (
     TRIP_REPORT_FIELDS,
-    completed_trip_records,
     group_trip_records_by_driver,
     group_trip_records_by_route,
+    order_trip_records,
     summarize_trip_records,
 )
 
@@ -39,7 +39,7 @@ def build_trip_pdf_report(
     trips: list[dict[str, Any]],
     metadata: dict[str, Any],
 ) -> BytesIO:
-    trips = completed_trip_records(trips)
+    trips = order_trip_records(trips)
     output = BytesIO()
     page_width, page_height = landscape(A4)
     document = SimpleDocTemplate(

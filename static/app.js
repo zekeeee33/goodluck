@@ -3788,7 +3788,7 @@ function renderTripReports() {
     ${header("REPORTS & ANALYTICS", "Trip Reports", "Create and export filtered trip reports.")}
     <section class="panel trip-report-panel" aria-labelledby="trip-report-title">
       <div class="panel-heading records-heading trip-report-heading">
-        <div><p class="eyebrow">TRIP REPORTS</p><h2 id="trip-report-title">Trip Reports</h2><p class="muted-copy">Review completed trips by route and driver, then export the filtered report to Excel or PDF.</p></div>
+        <div><p class="eyebrow">TRIP REPORTS</p><h2 id="trip-report-title">Trip Reports</h2><p class="muted-copy">Review trips by route and driver, then export the filtered report to Excel or PDF.</p></div>
         <div class="trip-report-actions">
           <button class="button button-primary" type="button" data-action="trip-report-apply" ${report.loading || report.exporting ? "disabled" : ""}>Preview Report</button>
           <button class="button button-secondary" type="button" data-action="trip-report-clear" ${report.loading || report.exporting ? "disabled" : ""}>Clear filters</button>
@@ -3821,7 +3821,7 @@ function renderTripReports() {
         </div>
       </details>
       <div class="trip-report-summary">
-        <strong>${formatNumber(report.total)} completed trips</strong><span>·</span>
+        <strong>${formatNumber(report.total)} trips</strong><span>·</span>
         <span>${formatNumber(report.total_unique_routes || 0)} unique routes</span><span>·</span>
         <span>${formatNumber(report.total_drivers || 0)} drivers</span><span>·</span>
         <span>Total trip revenue: ${report.summary?.revenue_trip_count ? formatCurrency(report.summary.total_revenue) : "N/A"}</span><span>·</span>

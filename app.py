@@ -40,9 +40,9 @@ from manifest_ocr import extract_manifest_fields, scan_manifest_image
 from trip_pdf_report import build_trip_pdf_report
 from trip_report_utils import (
     TRIP_REPORT_GROUPINGS,
-    completed_trip_records,
     group_trip_records,
     group_trip_records_by_route,
+    order_trip_records,
     summarize_trip_records,
 )
 
@@ -1842,7 +1842,6 @@ def _trip_report_metadata(
     records: list[dict[str, Any]],
 ) -> dict[str, Any]:
     report_type = params["p_report_type"]
-    records = completed_trip_records(records)
     report_summary = _trip_report_summary(records)
     filters: list[str] = []
     if params["p_date_from"] or params["p_date_to"]:
@@ -1961,7 +1960,7 @@ def admin_trip_report_preview() -> Any:
         if "only administrators" in str(exc).lower():
             return _json_error(str(exc), 403)
         return _dispatch_error_response(exc)
-    records = completed_trip_records(records)
+    records = order_trip_records(records)
     summary = _trip_report_summary(records)
     return jsonify({
         "records": records,
@@ -2053,7 +2052,7 @@ def _export_admin_trip_report(file_format: str) -> Any:
         if "only administrators" in str(exc).lower():
             return _json_error(str(exc), 403)
         return _dispatch_error_response(exc)
-    records = completed_trip_records(records)
+    records = order_trip_records(records)
     metadata = _trip_report_metadata(params, records)
     if not records:
         return _json_error("No trips match the selected report filters.", 422)

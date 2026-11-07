@@ -102,6 +102,21 @@ class TripCountReportTests(unittest.TestCase):
             [1, 2, 3],
         )
 
+    def test_filtered_excel_report_keeps_incomplete_and_cancelled_trips(self):
+        trips = [
+            trip(1),
+            {**trip(2), "status": "awaiting_arrival"},
+            {**trip(3), "status": "cancelled"},
+        ]
+        workbook = load_workbook(build_filtered_trip_excel_report(
+            trips,
+            {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
+        ))
+
+        self.assertEqual(workbook["Overall Summary"]["B5"].value, 3)
+        all_trips_sheet = workbook["All Trips"]
+        self.assertIn("Trips: 3", all_trips_sheet["A10"].value)
+
     def test_all_trips_sheet_includes_driver_route_matrix_below_records(self):
         trips = [
             trip(1, driver="Driver A", origin="DAV1", destination="DAV2"),

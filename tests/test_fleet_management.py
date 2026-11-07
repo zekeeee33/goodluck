@@ -359,6 +359,30 @@ class AdminTripReportsTests(unittest.TestCase):
             "p_report_type": "driver",
         })
 
+    def test_report_preview_includes_matching_trips_with_any_status(self):
+        report = {
+            "records": [
+                {"id": 91, "status": "completed", "origin": "Manila"},
+                {"id": 92, "status": "awaiting_arrival", "origin": "Manila"},
+                {"id": 93, "status": "recorded", "origin": "Manila"},
+            ],
+            "total": 3,
+            "page": 1,
+            "page_size": 100,
+            "summary": {"total_trips": 3},
+        }
+        with patch.object(web_app, "_dispatch_rpc", return_value=report):
+            response = self.client.get(
+                "/api/admin/trip-reports?date_from=2026-11-02&date_to=2026-11-02"
+            )
+
+        self.assertEqual(response.status_code, 200)
+        result = response.get_json()
+        self.assertEqual([trip["status"] for trip in result["records"]], [
+            "completed", "awaiting_arrival", "recorded",
+        ])
+        self.assertEqual(result["total"], 3)
+
     def test_report_options_are_admin_only(self):
         with patch.object(web_app, "_user_role", return_value="dispatcher"), patch.object(
             web_app, "_dispatch_rpc"
