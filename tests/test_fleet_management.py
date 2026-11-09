@@ -1888,6 +1888,39 @@ class PayrollCalculationTests(unittest.TestCase):
             {"Unconfigured Route"},
         )
 
+    def test_payroll_report_applies_period_cash_advances_to_driver_totals(self):
+        client = FakeSupabaseClient()
+        manager = FleetManager(client=client)
+        driver = manager.add_driver("Advance Driver", "PAY-DL-ADVANCE")
+        client.tables["payroll_periods"] = [{
+            "id": 2,
+            "start_date": "2026-11-01",
+            "end_date": "2026-11-15",
+            "status": "draft",
+        }]
+        client.tables["cash_advances"] = [
+            {
+                "id": 1,
+                "payroll_period_id": 2,
+                "driver_id": driver["id"],
+                "advance_date": "2026-11-04",
+                "amount": "2000.00",
+            },
+            {
+                "id": 2,
+                "payroll_period_id": 2,
+                "driver_id": driver["id"],
+                "advance_date": "2026-11-06",
+                "amount": "500.00",
+            },
+        ]
+
+        report = manager.payroll_report("2026-11-01", "2026-11-15")
+
+        self.assertEqual(len(report["cash_advances"]), 2)
+        self.assertEqual(report["drivers"][0]["cash_advances"], "2500.00")
+        self.assertEqual(report["drivers"][0]["net_before_overdraft"], "-2500.00")
+
     def test_payroll_matches_imported_trip_driver_name_when_driver_id_is_missing(self):
         client = FakeSupabaseClient()
         manager = FleetManager(client=client)

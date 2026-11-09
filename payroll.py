@@ -288,11 +288,11 @@ class PayrollService:
                 by_driver[driver_key] = driver
             driver["trips"].append(row)
         for advance in advances:
-            driver = by_driver.get(str(advance.get("driver_id")))
+            driver = by_driver.get(f"id:{advance.get('driver_id')}")
             if driver:
                 driver["cash_advances"].append(advance)
         for transaction in overdraft_rows:
-            driver = by_driver.get(str(transaction.get("driver_id")))
+            driver = by_driver.get(f"id:{transaction.get('driver_id')}")
             if not driver or str(transaction.get("effective_date", "")) > end_date:
                 continue
             driver["overdraft_transactions"].append(transaction)
