@@ -1233,6 +1233,7 @@ class FleetManager:
             fuel_values["actual_expense"] = values["actual_fuel_expense"]
         if "fuel_remarks" in values:
             fuel_values["remarks"] = values["fuel_remarks"]
+        fuel_fields = {"fuel_allocation", "actual_fuel_expense", "fuel_remarks"}
 
         route_origin = normalized_values.get("origin")
         route_destination = normalized_values.get("destination")
@@ -1245,7 +1246,10 @@ class FleetManager:
             != str(normalized_values.get("trailer_id") or "")
         )
         update_values = {
-            **{k: v for k, v in normalized_values.items() if k in editable_fields},
+            **{
+                k: v for k, v in normalized_values.items()
+                if k in editable_fields and k not in fuel_fields
+            },
             "truck_id": truck_id,
             "vehicle_id": truck_id,
             "trip_date": normalized_values["shipment_date"],

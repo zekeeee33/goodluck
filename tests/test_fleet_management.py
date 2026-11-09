@@ -3611,6 +3611,50 @@ class FleetManagerTests(unittest.TestCase):
         self.assertEqual(reassigned["pallet_capacity"], 36)
         self.assertEqual(reassigned["truck_route_rate"], "1847.00")
 
+    def test_trip_edit_saves_fuel_details_only_to_fuel_logs(self):
+        truck = self.manager.add_vehicle("FUEL-EDIT-TRUCK", "Toyota", "Hiace", 2024)
+        driver = self.manager.add_driver("Fuel Edit Driver", "FUEL-EDIT-DL")
+        trip = self.manager.add_trip(
+            truck["id"], driver["id"], "DAV1 to PLAS", 0, 0,
+            shipment_date="2026-11-04",
+            origin="DAV1",
+            destination="PLAS",
+        )
+
+        updated = self.manager.update_trip(
+            trip["id"],
+            {
+                "ism_no": None,
+                "shipment_date": "2026-11-04",
+                "time_in": None,
+                "time_out": None,
+                "origin": "DAV1",
+                "destination": "PLAS",
+                "vehicle_id": truck["id"],
+                "truck_id": truck["id"],
+                "trailer_id": None,
+                "driver_id": driver["id"],
+                "load_details": "EMPTY",
+                "trip_fuel": None,
+                "notes": None,
+                "route": "DAV1 to PLAS",
+                "fuel_allocation": 250,
+                "actual_fuel_expense": 1800,
+                "fuel_remarks": "Trip fuel",
+            },
+            edited_by="admin",
+            editor_email=None,
+        )
+
+        self.assertNotIn("actual_fuel_expense", updated)
+        self.assertNotIn("fuel_allocation", updated)
+        self.assertNotIn("fuel_remarks", updated)
+        self.assertEqual(len(self.client.tables["fuel_logs"]), 1)
+        fuel_log = self.client.tables["fuel_logs"][0]
+        self.assertEqual(fuel_log["fuel_allocation"], 250.0)
+        self.assertEqual(fuel_log["actual_expense"], 1800.0)
+        self.assertEqual(fuel_log["remarks"], "Trip fuel")
+
     def test_trips_reject_missing_or_inactive_truck_and_trailer(self):
         self.configure_davao_plas_routes()
         truck = self.manager.add_vehicle("VALIDATION-TRUCK", "Hino", "300", 2024)
