@@ -29,6 +29,7 @@ from excel_report import (
     build_fuel_excel_report,
     build_payroll_excel_report,
     build_trip_excel_report,
+    build_tire_excel_report,
 )
 from fleet_management import (
     FleetManagementError,
@@ -3026,6 +3027,40 @@ def _tire_csv_response() -> Response:
     )
 
 
+def _tire_excel_response() -> Any:
+    sort_fields = {
+        "date_installed": "date_installed",
+        "lifespan": "remaining_lifespan_pct",
+        "brand": "brand",
+        "plate": "plate_number",
+    }
+    sort_by = request.args.get("sort_by", "date_installed")
+    sort_dir = request.args.get("sort_dir", "desc").lower()
+    if sort_by not in sort_fields or sort_dir not in {"asc", "desc"}:
+        raise ValueError("Sort field or direction is invalid")
+
+    records: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        page = get_manager()._execute(
+            _tire_query_from_request()
+            .order(sort_fields[sort_by], desc=sort_dir == "desc")
+            .order("id", desc=True)
+            .range(offset, offset + 999)
+        ).data or []
+        records.extend(dict(record) for record in page)
+        if len(page) < 1000:
+            break
+        offset += 1000
+
+    return send_file(
+        build_tire_excel_report(records),
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name="tire-monitoring.xlsx",
+    )
+
+
 def _payroll_period_from_request(payload: dict[str, Any]) -> tuple[str, str]:
     start_date = _required_text(payload, "start_date")
     end_date = _required_text(payload, "end_date")
@@ -3061,6 +3096,8 @@ def tire_monitoring_records() -> Any:
     try:
         if request.args.get("export", "").lower() == "csv":
             return _tire_csv_response()
+        if request.args.get("export", "").lower() == "xlsx":
+            return _tire_excel_response()
         page = _integer({"page": request.args.get("page", "1")}, "page")
         page_size = _integer({"page_size": request.args.get("page_size", "25")}, "page_size")
         if page < 1 or not 1 <= page_size <= 100:

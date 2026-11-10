@@ -73,7 +73,8 @@ EXCEL_CURRENCY_FIELDS = {
 EXCEL_DATE_FIELDS = {
     "advance_date", "assigned_date", "created_at", "effective_date",
     "insurance_expiry", "logged_on", "payroll_date", "performed_on",
-    "record_date", "registration_expiry", "returned_date", "shipment_date",
+    "date_installed", "date_replaced", "record_date", "registration_expiry",
+    "returned_date", "shipment_date",
     "trip_date",
 }
 ROUTE_DETAIL_FIELDS = tuple(
@@ -1087,6 +1088,112 @@ def build_fuel_excel_report(fuel_logs: list[dict[str, Any]]) -> BytesIO:
                 }.get(field, field))
             )
             for record in fuel_logs
+        )
+        worksheet.column_dimensions[get_column_letter(column)].width = min(
+            max(max(map(len, values_for_width), default=0) + 2, 12), 36
+        )
+
+    add_excel_report_branding(workbook)
+    output = BytesIO()
+    workbook.save(output)
+    output.seek(0)
+    return output
+
+
+def build_tire_excel_report(tire_records: list[dict[str, Any]]) -> BytesIO:
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Tire Monitoring"
+    workbook.properties.title = "Tire Monitoring Report"
+    workbook.properties.subject = "Formatted truck and trailer tire history"
+    worksheet.sheet_view.showGridLines = False
+
+    fields = (
+        ("reference_no", "Reference No."),
+        ("asset_type", "Asset Type"),
+        ("plate_number", "Plate Number"),
+        ("brand", "Brand"),
+        ("size", "Size"),
+        ("tire_type", "Type"),
+        ("serial_no", "Serial No."),
+        ("supplier", "Supplier"),
+        ("date_installed", "Date Installed"),
+        ("date_replaced", "Date Replaced"),
+        ("remaining_lifespan_pct", "Life Span (%)"),
+        ("reason", "Reason"),
+        ("remarks", "Remarks"),
+        ("status", "Status"),
+    )
+    worksheet.merge_cells(start_row=1, start_column=1, end_row=1, end_column=len(fields))
+    title = worksheet.cell(row=1, column=1, value="Fleet Management System - Tire Monitoring")
+    title.font = Font(name="Aptos Display", size=16, bold=True, color="FFFFFF")
+    title.fill = PatternFill("solid", fgColor="17365D")
+    title.alignment = Alignment(vertical="center")
+    worksheet.row_dimensions[1].height = 30
+    generated = worksheet.cell(
+        row=3,
+        column=1,
+        value=(
+            f"Generated {datetime.now().astimezone().strftime('%Y-%m-%d %H:%M %Z')}"
+            f" | {len(tire_records)} records"
+        ),
+    )
+    generated.font = Font(italic=True, color="64748B")
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    alternate_fill = PatternFill("solid", fgColor="EAF1F8")
+    for column, (_, label) in enumerate(fields, start=1):
+        cell = worksheet.cell(row=4, column=column, value=label)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = header_fill
+        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    worksheet.row_dimensions[4].height = 30
+
+    for row_index, record in enumerate(tire_records, start=5):
+        for column, (field, _) in enumerate(fields, start=1):
+            value = record.get(field)
+            if field == "remaining_lifespan_pct" and value is not None:
+                value = float(value)
+            else:
+                value = _excel_cell_value(field, value)
+            cell = worksheet.cell(row=row_index, column=column, value=value)
+            if isinstance(value, str):
+                cell.data_type = "s"
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            if row_index % 2:
+                cell.fill = alternate_fill
+            if field in {"date_installed", "date_replaced"} and isinstance(value, date):
+                cell.number_format = "yyyy-mm-dd"
+            elif field == "remaining_lifespan_pct" and value is not None:
+                cell.number_format = '0.0"%"'
+
+    last_column = get_column_letter(len(fields))
+    last_row = max(4, 4 + len(tire_records))
+    if tire_records:
+        table = Table(displayName="TireMonitoringRecords", ref=f"A4:{last_column}{last_row}")
+        table.tableStyleInfo = TableStyleInfo(
+            name="TableStyleMedium2",
+            showFirstColumn=False,
+            showLastColumn=False,
+            showRowStripes=True,
+            showColumnStripes=False,
+        )
+        worksheet.add_table(table)
+    else:
+        worksheet.cell(row=5, column=1, value="No tire records match the selected filters.")
+    worksheet.auto_filter.ref = f"A4:{last_column}{last_row}"
+    worksheet.freeze_panes = "A5"
+    worksheet.print_title_rows = "1:4"
+    worksheet.page_setup.orientation = "landscape"
+    worksheet.page_setup.fitToWidth = 1
+    worksheet.page_setup.fitToHeight = 0
+    worksheet.sheet_properties.pageSetUpPr.fitToPage = True
+    worksheet.print_area = f"A1:{last_column}{max(last_row, 5)}"
+    for column, (field, label) in enumerate(fields, start=1):
+        values_for_width = [label]
+        values_for_width.extend(
+            str(record.get(field) or "")
+            for record in tire_records
         )
         worksheet.column_dimensions[get_column_letter(column)].width = min(
             max(max(map(len, values_for_width), default=0) + 2, 12), 36

@@ -2455,7 +2455,7 @@ function renderTireMonitoring() {
     : selectedType === "trailer" ? state.data.trailers || [] : [];
   const maxPage = Math.max(1, Math.ceil(tires.total / tires.page_size));
   return `
-    ${header("FUEL & MAINTENANCE", "Tire Monitoring Sheet", "Track truck and trailer tire assignments, replacement history, and estimated remaining service life.", `<button class="button button-secondary" data-action="tire-export" type="button" ${tires.loading ? "disabled" : ""}>Export CSV</button><button class="button button-primary" data-action="tire-add" type="button" ${tires.loading ? "disabled" : ""}><span aria-hidden="true">＋</span> Add Tire</button>`)}
+    ${header("FUEL & MAINTENANCE", "Tire Monitoring Sheet", "Track truck and trailer tire assignments, replacement history, and estimated remaining service life.", `<button class="button button-secondary" data-action="tire-export" type="button" ${tires.loading ? "disabled" : ""}>Export Excel</button><button class="button button-primary" data-action="tire-add" type="button" ${tires.loading ? "disabled" : ""}><span aria-hidden="true">＋</span> Add Tire</button>`)}
     <section class="tire-monitoring-page">
       <div class="stats-grid tire-summary-grid">
         ${statCard("Total Tire Records", summaryValue("total_records"), "blue", "◉")}
@@ -2641,7 +2641,7 @@ async function exportTireMonitoring(button) {
   ]) {
     if (state.tires[key]) params.set(key, state.tires[key]);
   }
-  params.set("export", "csv");
+  params.set("export", "xlsx");
   button.disabled = true;
   try {
     const response = await fetch(`/api/tires?${params.toString()}`, { cache: "no-store" });
@@ -2653,9 +2653,9 @@ async function exportTireMonitoring(button) {
     const objectUrl = URL.createObjectURL(await response.blob());
     const link = document.createElement("a");
     link.href = objectUrl;
-    link.download = "tire-monitoring.csv";
+    link.download = "tire-monitoring.xlsx";
     link.click();
-    URL.revokeObjectURL(objectUrl);
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
   } catch (error) {
     showToast(error.message || "Could not export tire records.", "error");
   } finally {

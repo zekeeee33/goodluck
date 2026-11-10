@@ -3236,6 +3236,64 @@ class TireMonitoringTests(unittest.TestCase):
             )
             self.assertEqual(invalid_percentage.status_code, 400)
             self.assertIn("percentage between 0 and 100", invalid_percentage.json["error"])
+
+    def test_tire_export_returns_formatted_excel_workbook(self):
+        manager = FleetManager(client=FakeSupabaseClient())
+        manager.client.tables["tire_monitoring_sheet"] = [{
+            "id": 10,
+            "reference_no": "TIR-00000010",
+            "asset_type": "truck",
+            "plate_number": "UHZ 217",
+            "brand": "SUN LIFE",
+            "size": "11R22.5",
+            "tire_type": "TUBELESS",
+            "serial_no": "MOCK-UHZ217-SUNLIFE-001",
+            "supplier": None,
+            "date_installed": "2026-09-08",
+            "date_replaced": None,
+            "remaining_lifespan_pct": 100,
+            "reason": None,
+            "remarks": "SAMPLE DATA",
+            "status": "installed",
+        }]
+        with patch.dict(
+            web_app.app.config,
+            {"TESTING": True, "TEST_AUTH_BYPASS": True},
+        ), patch.object(web_app, "get_manager", return_value=manager):
+            response = web_app.app.test_client().get("/api/tires?export=xlsx")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.mimetype,
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self.assertIn("tire-monitoring.xlsx", response.headers["Content-Disposition"])
+        workbook = load_workbook(BytesIO(response.data), data_only=True)
+        assert_excel_report_branding(self, workbook)
+        sheet = workbook["Tire Monitoring"]
+        self.assertEqual(sheet["A4"].value, "Reference No.")
+        self.assertEqual(sheet["A5"].value, "TIR-00000010")
+        self.assertEqual(sheet["C5"].value, "UHZ 217")
+        self.assertEqual(sheet["K5"].value, 100)
+        self.assertEqual(sheet["N5"].value, "installed")
+        self.assertTrue(sheet.freeze_panes == "A5")
+        self.assertEqual(len(sheet.tables), 1)
+
+    def test_tire_mock_data_sql_is_idempotent_and_uses_existing_truck(self):
+        sample_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "Sql snippets",
+            "supabase_tire_monitoring_mock_data.sql",
+        )
+        with open(sample_path, encoding="utf-8") as sample_file:
+            sample_sql = sample_file.read()
+
+        self.assertIn("public.tire_monitoring", sample_sql)
+        self.assertIn("public.vehicles", sample_sql)
+        self.assertIn("MOCK-UHZ217-SUNLIFE-001", sample_sql)
+        self.assertIn("where not exists", sample_sql.lower())
+
     def test_dispatchers_cannot_replace_or_remove_tire_records(self):
         with patch.dict(
             web_app.app.config, {"TESTING": True, "TEST_AUTH_BYPASS": True}

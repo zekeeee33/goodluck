@@ -166,11 +166,19 @@ rate-review flag and are not assigned a guessed rate or trailer.
 ## Tire Monitoring Sheet
 
 After the truck/trailer migration, run
-[`supabase_tire_monitoring_migration.sql`](./supabase_tire_monitoring_migration.sql)
+[`supabase_tire_monitoring_migration.sql`](./Sql%20snippets/supabase_tire_monitoring_migration.sql)
 in the Supabase SQL Editor. It adds the tire record and immutable audit-history
 tables, truck/trailer foreign keys, lifecycle checks, indexes, RLS policies, and
 the server-side summary, lifespan, replacement, and removal functions. The
 migration is additive and does not delete existing fleet records.
+
+To populate sample records for testing, paste
+[`supabase_tire_monitoring_mock_data.sql`](./Sql%20snippets/supabase_tire_monitoring_mock_data.sql)
+into the SQL Editor after the tire migration. It prefers a truck with plate
+UHZ 217 and otherwise uses the first truck found; the sample serial numbers make
+the rows identifiable and rerunning the script will not duplicate them. The
+Tire Monitoring Sheet's Export Excel button downloads a formatted workbook
+containing all records matching the current filters.
 
 Administrators can view all tire records, add and edit details, replace installed
 tires, and record removals. Dispatchers can see and add only tire records they
