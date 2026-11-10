@@ -85,7 +85,12 @@ class PayrollService:
         self.client = manager.client
         self.execute = manager._execute
 
-    def _rows(self, table: str, filters: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    def _rows(
+        self,
+        table: str,
+        filters: dict[str, Any] | None = None,
+        date_range: tuple[str, str, str] | None = None,
+    ) -> list[dict[str, Any]]:
         page_size = 1000
         offset = 0
         result: list[dict[str, Any]] = []
@@ -93,6 +98,9 @@ class PayrollService:
             query = self.client.table(table).select("*")
             for field, value in (filters or {}).items():
                 query = query.eq(field, value)
+            if date_range:
+                field, start_date, end_date = date_range
+                query = query.gte(field, start_date).lte(field, end_date)
             response = self.execute(
                 query.order("id").range(offset, offset + page_size - 1)
             )
@@ -168,9 +176,9 @@ class PayrollService:
                 "supabase_settings_migration.sql in Supabase."
             )
 
-        advances = (
-            self._rows("cash_advances", {"payroll_period_id": period["id"]})
-            if period else []
+        advances = self._rows(
+            "cash_advances",
+            date_range=("advance_date", start_date, end_date),
         )
         audit_history = (
             self._rows("payroll_audit", {"payroll_period_id": period["id"]})
@@ -449,6 +457,15 @@ class PayrollService:
         period = self._create_period(start_date, end_date, actor_id)
         if period.get("status") != "draft":
             raise ValueError("Cash advances cannot be changed after payroll review")
+        finalized_periods = self._rows("payroll_periods", {"status": "finalized"})
+        if any(
+            str(item.get("start_date", "")) <= advance_date
+            <= str(item.get("end_date", ""))
+            for item in finalized_periods
+        ):
+            raise ValueError(
+                "Cash advances cannot be added for dates in a finalized payroll period"
+            )
         if reference:
             existing = self._rows("cash_advances", {"reference": reference})
             if existing:

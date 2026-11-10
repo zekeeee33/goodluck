@@ -385,8 +385,10 @@ After creating the fleet/trips tables, run
 Supabase SQL Editor. This adds payroll periods, immutable reviewed trip/rate
 snapshots, driver summaries, cash advances, overdraft transactions, and audit
 history. Payroll uses the existing trip and driver IDs and does not copy or
-modify trip records. The migration's database function finalizes payroll
-atomically and prevents a trip from being finalized in more than one period.
+modify trip records. Cash advances are included according to their advance
+dates, even when they were entered under a different payroll period. The
+migration's database function finalizes payroll atomically and prevents trips
+or cash advances from being finalized in overlapping periods.
 If the payroll migration was already run before an update, rerun the updated SQL
 in the Supabase SQL Editor so the finalization function is replaced. Run the
 latest `Sql snippets/supabase_completed_trips_migration.sql` as well to install

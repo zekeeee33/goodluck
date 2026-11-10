@@ -1888,14 +1888,14 @@ class PayrollCalculationTests(unittest.TestCase):
             {"Unconfigured Route"},
         )
 
-    def test_payroll_report_applies_period_cash_advances_to_driver_totals(self):
+    def test_payroll_report_filters_cash_advances_by_advance_date(self):
         client = FakeSupabaseClient()
         manager = FleetManager(client=client)
         driver = manager.add_driver("Advance Driver", "PAY-DL-ADVANCE")
         client.tables["payroll_periods"] = [{
             "id": 2,
             "start_date": "2026-11-01",
-            "end_date": "2026-11-15",
+            "end_date": "2026-11-30",
             "status": "draft",
         }]
         client.tables["cash_advances"] = [
@@ -1913,9 +1913,16 @@ class PayrollCalculationTests(unittest.TestCase):
                 "advance_date": "2026-11-06",
                 "amount": "500.00",
             },
+            {
+                "id": 3,
+                "payroll_period_id": 2,
+                "driver_id": driver["id"],
+                "advance_date": "2026-11-09",
+                "amount": "300.00",
+            },
         ]
 
-        report = manager.payroll_report("2026-11-01", "2026-11-15")
+        report = manager.payroll_report("2026-11-01", "2026-11-08")
 
         self.assertEqual(len(report["cash_advances"]), 2)
         self.assertEqual(report["drivers"][0]["cash_advances"], "2500.00")

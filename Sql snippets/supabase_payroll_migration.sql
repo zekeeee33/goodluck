@@ -158,14 +158,30 @@ begin
         raise exception 'A trip is already included in another finalized payroll';
     end if;
 
+    if exists (
+        select 1
+        from public.cash_advances ca
+        join public.payroll_periods prior_period
+          on prior_period.id <> p_period_id
+         and prior_period.status = 'finalized'
+         and ca.advance_date between prior_period.start_date and prior_period.end_date
+        where ca.advance_date between selected_period.start_date
+              and selected_period.end_date
+    ) then
+        raise exception 'A cash advance is already included in another finalized payroll';
+    end if;
+
     delete from public.payroll_summaries where payroll_period_id = p_period_id;
     for summary_row in
         select d.id as driver_id, d.name as driver_name,
                count(pi.id)::integer as total_trips,
                coalesce(sum(pi.rate), 0)::numeric(12, 2) as gross_pay,
+               -- Use the advance's date, not the period under which it was entered.
                coalesce((
                    select sum(ca.amount) from public.cash_advances ca
-                   where ca.payroll_period_id = p_period_id and ca.driver_id = d.id
+                   where ca.driver_id = d.id
+                     and ca.advance_date between selected_period.start_date
+                         and selected_period.end_date
                ), 0)::numeric(12, 2) as cash_advances,
                coalesce((
                    select sum(ot.amount) from public.overdraft_transactions ot
