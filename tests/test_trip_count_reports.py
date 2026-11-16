@@ -102,6 +102,27 @@ class TripCountReportTests(unittest.TestCase):
             [worksheet.cell(row=row, column=4).value for row in range(7, 10)],
             [1, 2, 3],
         )
+        self.assertNotIn(
+            "Total Revenue",
+            [
+                workbook["Overall Summary"].cell(row=12, column=column).value
+                for column in range(1, workbook["Overall Summary"].max_column + 1)
+            ],
+        )
+        self.assertNotIn(
+            "Total Revenue",
+            [
+                workbook["Route Summaries"].cell(row=5, column=column).value
+                for column in range(1, workbook["Route Summaries"].max_column + 1)
+            ],
+        )
+        self.assertFalse(any(
+            "revenue" in str(cell.value).casefold()
+            for worksheet in workbook.worksheets
+            for row in worksheet.iter_rows()
+            for cell in row
+            if cell.value is not None
+        ))
 
     def test_filtered_excel_report_keeps_incomplete_and_cancelled_trips(self):
         trips = [

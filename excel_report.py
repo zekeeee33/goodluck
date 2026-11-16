@@ -433,22 +433,16 @@ def build_filtered_trip_excel_report(
         ("Total trips", overall["total_trips"]),
         ("Unique routes traveled", len(routes)),
         ("Drivers involved", len(drivers)),
-        (
-            "Total trip revenue",
-            overall["total_revenue"] if overall["revenue_trip_count"] else None,
-        ),
     ]
     for row_number, (label, value) in enumerate(summary_rows, start=5):
         overview.cell(row=row_number, column=1, value=label).font = Font(bold=True)
         overview.cell(row=row_number, column=1).fill = summary_fill
         value_cell = overview.cell(row=row_number, column=2, value=value)
         value_cell.fill = summary_fill
-        if label == "Total trip revenue":
-            value_cell.number_format = currency_format
     overview.cell(row=11, column=1, value="Route Summary").font = Font(bold=True, size=12)
     write_table_header(
         overview, 12,
-        ["Route", "Origin", "Destination", "Total Trips", "Total Revenue"],
+        ["Route", "Origin", "Destination", "Total Trips"],
     )
     for row_number, route in enumerate(routes, start=13):
         route_summary = summarize_trip_records(route["trips"])
@@ -456,47 +450,32 @@ def build_filtered_trip_excel_report(
         overview.cell(row=row_number, column=2, value=route["origin"])
         overview.cell(row=row_number, column=3, value=route["destination"])
         overview.cell(row=row_number, column=4, value=route_summary["total_trips"])
-        revenue_cell = overview.cell(
-            row=row_number, column=5,
-            value=(
-                route_summary["total_revenue"]
-                if route_summary["revenue_trip_count"] else None
-            ),
-        )
-        revenue_cell.number_format = currency_format
     overview.freeze_panes = "A13"
     overview.column_dimensions["A"].width = 28
     overview.column_dimensions["B"].width = 32
     overview.column_dimensions["C"].width = 32
     overview.column_dimensions["D"].width = 18
-    overview.column_dimensions["E"].width = 20
 
     route_summary_sheet = workbook.create_sheet("Route Summaries")
-    write_sheet_title(route_summary_sheet, "Route Summaries", 6)
+    write_sheet_title(route_summary_sheet, "Route Summaries", 5)
     write_table_header(
         route_summary_sheet, 5,
-        ["Route", "Route Identifier", "Origin", "Destination", "Total Trips", "Total Revenue"],
+        ["Route", "Route Identifier", "Origin", "Destination", "Total Trips"],
     )
     for row_number, route in enumerate(routes, start=6):
         route_summary = summarize_trip_records(route["trips"])
         values = (
             route["label"], route["identifier"], route["origin"],
             route["destination"], route_summary["total_trips"],
-            (
-                route_summary["total_revenue"]
-                if route_summary["revenue_trip_count"] else None
-            ),
         )
         for column, value in enumerate(values, start=1):
             route_summary_sheet.cell(row=row_number, column=column, value=value)
-        route_summary_sheet.cell(row=row_number, column=6).number_format = currency_format
     route_summary_sheet.freeze_panes = "A6"
     route_summary_sheet.column_dimensions["A"].width = 22
     route_summary_sheet.column_dimensions["B"].width = 20
     route_summary_sheet.column_dimensions["C"].width = 30
     route_summary_sheet.column_dimensions["D"].width = 30
     route_summary_sheet.column_dimensions["E"].width = 16
-    route_summary_sheet.column_dimensions["F"].width = 20
 
     route_details = workbook.create_sheet("Route Details")
     route_detail_headers = [
@@ -618,7 +597,7 @@ def build_filtered_trip_excel_report(
         movement_header_row = row_number
         write_table_header(
             driver_sheet, row_number,
-            ["Route", "Origin", "Destination", "Total Trips", "Total Revenue"],
+            ["Route", "Origin", "Destination", "Total Trips"],
         )
         row_number += 1
         for route in driver_routes:
@@ -627,18 +606,11 @@ def build_filtered_trip_excel_report(
             driver_sheet.cell(row=row_number, column=2, value=route["origin"])
             driver_sheet.cell(row=row_number, column=3, value=route["destination"])
             driver_sheet.cell(row=row_number, column=4, value=route_summary["total_trips"])
-            driver_sheet.cell(
-                row=row_number, column=5,
-                value=(
-                    route_summary["total_revenue"]
-                    if route_summary["revenue_trip_count"] else None
-                ),
-            ).number_format = currency_format
             row_number += 1
         if driver_routes:
             movement_table = Table(
                 displayName=f"DriverMovement{len(workbook.worksheets)}",
-                ref=f"A{movement_header_row}:E{row_number - 1}",
+                ref=f"A{movement_header_row}:D{row_number - 1}",
             )
             movement_table.tableStyleInfo = table_style
             driver_sheet.add_table(movement_table)
@@ -682,8 +654,6 @@ def build_filtered_trip_excel_report(
         worksheet.cell(row=3, column=1).data_type = "s"
         summary_values = (
             ("Total number of trips", overall["total_trips"]),
-            ("Total gross trip revenue", overall["total_revenue"]),
-            ("Average gross revenue per trip", overall["average_revenue_per_trip"]),
         )
         if group_by == "driver":
             worksheet.merge_cells(
@@ -692,12 +662,7 @@ def build_filtered_trip_excel_report(
             summary_cell = worksheet.cell(
                 row=5,
                 column=1,
-                value=(
-                    f"{overall['total_trips']:,} matching trips · "
-                    f"Gross trip revenue: ₱{overall['total_revenue']:,.2f} · "
-                    f"Average per revenue trip: "
-                    f"{'₱{:,.2f}'.format(overall['average_revenue_per_trip']) if overall['average_revenue_per_trip'] is not None else '—'}"
-                ),
+                value=f"{overall['total_trips']:,} matching trips",
             )
             summary_cell.data_type = "s"
             summary_cell.font = Font(bold=True, color="17365D")
@@ -784,7 +749,7 @@ def build_filtered_trip_excel_report(
                 movement_header_row = row_number
                 write_table_header(
                     worksheet, row_number,
-                    ["Route", "Origin", "Destination", "Total Trips", "Total Revenue"],
+                    ["Route", "Origin", "Destination", "Total Trips"],
                 )
                 row_number += 1
                 driver_routes = group_trip_records_by_route(group_trips)
@@ -794,20 +759,12 @@ def build_filtered_trip_excel_report(
                     worksheet.cell(row=row_number, column=2, value=route["origin"])
                     worksheet.cell(row=row_number, column=3, value=route["destination"])
                     worksheet.cell(row=row_number, column=4, value=route_summary["total_trips"])
-                    revenue_cell = worksheet.cell(
-                        row=row_number, column=5,
-                        value=(
-                            route_summary["total_revenue"]
-                            if route_summary["revenue_trip_count"] else None
-                        ),
-                    )
-                    revenue_cell.number_format = currency_format
                     row_number += 1
                 if driver_routes:
                     movement_table_number = len(worksheet.tables) + 1
                     movement_table = Table(
                         displayName=f"MovementData{sheet_index + 1}_{movement_table_number}",
-                        ref=f"A{movement_header_row}:E{row_number - 1}",
+                        ref=f"A{movement_header_row}:D{row_number - 1}",
                     )
                     movement_table.tableStyleInfo = table_style
                     worksheet.add_table(movement_table)
@@ -820,8 +777,7 @@ def build_filtered_trip_excel_report(
                     row=row_number,
                     column=1,
                     value=(
-                        f"Group totals: {group_summary['total_trips']} trips "
-                        f"· Gross trip revenue: ₱{group_summary['total_revenue']:,.2f}"
+                        f"Group totals: {group_summary['total_trips']} trips"
                     ),
                 )
                 group_totals.data_type = "s"

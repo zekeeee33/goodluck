@@ -3626,19 +3626,6 @@ function groupTripReportRecords(records, groupBy) {
     left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
 }
 
-function tripReportRevenueTotal(records) {
-  const cents = records.reduce((total, trip) => {
-    if (trip.trip_revenue == null) return total;
-    const value = String(trip.trip_revenue).trim();
-    const match = /^([+-]?)(\d+)(?:\.(\d*))?$/.exec(value);
-    if (!match) return total;
-    const sign = match[1] === "-" ? -1n : 1n;
-    const fraction = (match[3] || "").padEnd(2, "0").slice(0, 2);
-    return total + sign * (BigInt(match[2]) * 100n + BigInt(fraction || "0"));
-  }, 0n);
-  return Number(cents) / 100;
-}
-
 function tripReportRouteIdentifier(trip) {
   const routeNumber = trip.route_number;
   return routeNumber == null || !String(routeNumber).trim()
@@ -3710,19 +3697,17 @@ function tripReportGroupedTables(records, groupBy) {
       { sensitivity: "base" },
     ));
   routes.forEach((route) => {
-      route.label = route.identifier ? `Route ${route.identifier}` : "Route —";
-    route.revenue = tripReportRevenueTotal(route.records);
+    route.label = route.identifier ? `Route ${route.identifier}` : "Route —";
   });
   const routeSummary = `
     <section class="trip-report-section">
       <h3>Route Summary</h3>
       <div class="table-wrap"><table class="trip-record-table trip-report-summary-table">
-        <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th><th>Total Revenue</th></tr></thead>
+        <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th></tr></thead>
         <tbody>${routes.map((route) => `<tr>
           <td>${escapeHtml(route.label)}</td>
           <td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td>
           <td>${formatNumber(route.records.length)}</td>
-          <td>${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(route.revenue)) : "—"}</td>
         </tr>`).join("")}</tbody>
       </table></div>
     </section>`;
@@ -3752,15 +3737,14 @@ function tripReportGroupedTables(records, groupBy) {
         ...route,
         records: driverRouteRecords.get(route.key),
       }));
-    const revenue = tripReportRevenueTotal(driver.records);
     return `<section class="trip-report-section trip-report-driver-section">
       <h3>Driver: ${escapeHtml(driver.name)} <span>(${formatNumber(driver.records.length)} trips)</span></h3>
       ${tripTable(driver.records, true)}
       <h4>Movement Summary</h4>
       <div class="table-wrap"><table class="trip-record-table trip-report-summary-table">
-        <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th><th>Total Revenue</th></tr></thead>
+        <thead><tr><th>Route</th><th>Route Description</th><th>Total Trips</th></tr></thead>
         <tbody>${routeRows.map((route) => {
-          return `<tr><td>${escapeHtml(route.label)}</td><td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td><td>${formatNumber(route.records.length)}</td><td>${route.records.some((trip) => trip.trip_revenue != null) ? escapeHtml(formatCurrency(tripReportRevenueTotal(route.records))) : "—"}</td></tr>`;
+          return `<tr><td>${escapeHtml(route.label)}</td><td>${escapeHtml(`${route.origin} → ${route.destination}`)}</td><td>${formatNumber(route.records.length)}</td></tr>`;
         }).join("")}</tbody>
       </table></div>
     </section>`;
@@ -3831,8 +3815,6 @@ function renderTripReports() {
         <strong>${formatNumber(report.total)} trips</strong><span>·</span>
         <span>${formatNumber(report.total_unique_routes || 0)} unique routes</span><span>·</span>
         <span>${formatNumber(report.total_drivers || 0)} drivers</span><span>·</span>
-        <span>Total trip revenue: ${report.summary?.revenue_trip_count ? formatCurrency(report.summary.total_revenue) : "N/A"}</span><span>·</span>
-        ${report.summary?.average_revenue_per_trip != null ? `<span>·</span><span>Average per revenue trip: ${formatCurrency(report.summary.average_revenue_per_trip)}</span>` : ""}
         ${report.summary?.distance_trip_count ? `<span>from ${formatNumber(report.summary.distance_trip_count)} trips with odometer readings</span>` : ""}
       </div>
       <div class="trip-report-preview">${reportPreview}</div>
