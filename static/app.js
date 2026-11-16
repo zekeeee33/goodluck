@@ -3422,12 +3422,18 @@ function renderDriverRouteSummary(rows) {
   const routes = new Map();
   const drivers = new Map();
   for (const row of rows) {
+    const routeNumber = row.route_number != null && row.route_number !== "" ? String(row.route_number) : null;
+    const routeLabel = row.route_label || (routeNumber ? `Route ${routeNumber}` : "Unknown route");
     const route = {
-      label: row.route_label || "Unknown route",
+      label: routeLabel,
       origin: row.origin || "Unknown origin",
       destination: row.destination || "Unknown destination",
     };
-    const routeKey = JSON.stringify([route.label, route.origin, route.destination]);
+    const routeKey = JSON.stringify([
+      routeNumber || routeLabel,
+      route.origin,
+      route.destination,
+    ]);
     routes.set(routeKey, route);
     const driverName = row.driver_name || "Unassigned driver";
     if (!drivers.has(driverName)) drivers.set(driverName, new Map());

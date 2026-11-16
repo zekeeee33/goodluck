@@ -154,27 +154,60 @@ def group_trip_records_by_route(
     trips: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     trips = order_trip_records(trips)
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = defaultdict(list)
-    labels: dict[tuple[str, str, str], tuple[str, str, str]] = {}
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    labels: dict[tuple[str, str], tuple[str, str, str]] = {}
     for trip in trips:
         origin = " ".join(str(trip.get("origin") or "").split())
         destination = " ".join(str(trip.get("destination") or "").split())
-        identifier = _route_identifier(trip)
-        key = (identifier.casefold(), origin.casefold(), destination.casefold())
+        route_number = trip.get("route_number")
+        route_pair = trip.get("route_pair")
+        if route_number not in (None, ""):
+            key = ("route_number", str(route_number).strip().casefold())
+            identifier = str(route_number)
+        elif route_pair not in (None, ""):
+            normalized_pair = " ".join(str(route_pair).split()).casefold()
+            key = ("route_pair", normalized_pair)
+            identifier = str(route_pair).strip()
+        else:
+            normalized_origin = " ".join(str(origin or "Unknown origin").split()).casefold()
+            normalized_destination = " ".join(str(destination or "Unknown destination").split()).casefold()
+            key = (
+                "origin_destination",
+                f"{normalized_origin} -> {normalized_destination}",
+            )
+            identifier = f"{origin or 'Unknown origin'} → {destination or 'Unknown destination'}"
+
         groups[key].append(trip)
-        labels.setdefault(key, (identifier, origin, destination))
+        labels.setdefault(
+            key,
+            (
+                identifier or str(len(groups) + 1),
+                origin or "Unknown origin",
+                destination or "Unknown destination",
+            ),
+        )
 
     ordered_keys = sorted(
         groups,
         key=lambda key: (
             labels[key][1].casefold(),
             labels[key][2].casefold(),
-            key[0],
+            key[1].casefold(),
         ),
     )
     result = []
     for route_index, key in enumerate(ordered_keys, start=1):
         identifier, origin, destination = labels[key]
+        route_number = next(
+            (
+                trip.get("route_number")
+                for trip in groups[key]
+                if trip.get("route_number") not in (None, "")
+            ),
+            None,
+        )
+        if route_number not in (None, ""):
+            identifier = str(route_number)
         result.append({
             "identifier": identifier or str(route_index),
             "label": (

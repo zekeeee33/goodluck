@@ -169,8 +169,8 @@ begin
                     'Unknown route'
                 )
             end as route_label,
-            origin,
-            destination,
+            min(origin) as origin,
+            min(destination) as destination,
             count(*) as total_trips
         from filtered_records
         group by
@@ -182,9 +182,7 @@ begin
                     nullif(trim(route_pair), ''),
                     'Unknown route'
                 )
-            end,
-            origin,
-            destination
+            end
     ),
     page_rows as (
         select ordered.*

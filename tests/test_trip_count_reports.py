@@ -158,6 +158,19 @@ class TripCountReportTests(unittest.TestCase):
             ["Driver B", 1, 1, 2],
         )
 
+    def test_route_grouping_uses_route_number_when_names_vary(self):
+        trips = [
+            trip(1, driver="Driver A", origin="DAV1", destination="GENSAN"),
+            {**trip(2, driver="Driver B", origin="Davao Bottling Plant 1", destination="GENSAN Distribution Center"), "route_number": 1},
+            trip(3, driver="Driver C", origin="DAV2", destination="PLAS"),
+        ]
+        trips[0]["route_number"] = 1
+        trips[2]["route_number"] = 2
+        route_groups = group_trip_records_by_route(trips)
+        self.assertEqual([group["label"] for group in route_groups], ["Route 1", "Route 2"])
+        self.assertEqual([group["origin"] for group in route_groups], ["DAV1", "DAV2"])
+        self.assertEqual([len(group["trips"]) for group in route_groups], [2, 1])
+
     def test_trip_pdf_export_is_generated_with_trip_count_field(self):
         pdf = build_trip_pdf_report(
             self.trips,
