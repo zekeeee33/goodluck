@@ -6,7 +6,7 @@ from typing import Any
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
-from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.pagesizes import A3, landscape
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -42,12 +42,12 @@ def build_trip_pdf_report(
 ) -> BytesIO:
     trips = order_trip_records(trips)
     output = BytesIO()
-    page_width, page_height = landscape(A4)
+    page_width, page_height = landscape(A3)
     document = SimpleDocTemplate(
         output,
-        pagesize=landscape(A4),
-        rightMargin=7 * mm,
-        leftMargin=7 * mm,
+        pagesize=landscape(A3),
+        rightMargin=10 * mm,
+        leftMargin=10 * mm,
         topMargin=30 * mm,
         bottomMargin=9 * mm,
         title=str(metadata.get("title") or "Trip Report"),
@@ -78,7 +78,7 @@ def build_trip_pdf_report(
         alignment=TA_CENTER,
     )
     cell_style = ParagraphStyle(
-        "TripReportCell", parent=styles["Normal"],         fontSize=6, leading=7,
+        "TripReportCell", parent=styles["Normal"], fontSize=7.5, leading=9,
         wordWrap="CJK",
     )
     header_style = ParagraphStyle(
@@ -124,24 +124,35 @@ def build_trip_pdf_report(
         ),
         Spacer(1, 3 * mm),
     ]
-    natural_widths = [12, 21, 30, 25, 20, 26, 26, 20, 18, 15, 15, 30]
-    scale = available_width / sum(natural_widths)
-    table_widths = [width * scale for width in natural_widths]
-    route_detail_natural_widths = [
-        width
-        for (field, _), width in zip(TRIP_REPORT_FIELDS, natural_widths)
-        if field not in {"origin", "destination"}
-    ]
-    route_detail_natural_width_total = sum(route_detail_natural_widths)
-    route_detail_widths = [
-        available_width * 0.08,
-        available_width * 0.22,
-        available_width * 0.22,
-    ] + [
-        available_width * 0.48 * width / route_detail_natural_width_total
-        for (field, _), width in zip(TRIP_REPORT_FIELDS, natural_widths)
-        if field not in {"origin", "destination"}
-    ]
+    detail_column_weights = {
+        "route": 7,
+        "origin": 13,
+        "destination": 13,
+        "trip_count": 5,
+        "trip_date": 8,
+        "driver_name": 11,
+        "truck_plate": 8,
+        "trailer_plate": 7,
+        "shipment_date": 8,
+        "ism_no": 8,
+        "time_in": 5,
+        "time_out": 5,
+        "load_details": 9,
+    }
+
+    def detail_column_widths(fields: tuple[tuple[str, str], ...], include_route: bool) -> list[float]:
+        column_fields = (
+            (["route", "origin", "destination"] if include_route else [])
+            + [field for field, _ in fields]
+        )
+        total_weight = sum(detail_column_weights[field] for field in column_fields)
+        return [
+            available_width * detail_column_weights[field] / total_weight
+            for field in column_fields
+        ]
+
+    table_widths = detail_column_widths(TRIP_REPORT_FIELDS, False)
+    route_detail_widths = detail_column_widths(ROUTE_DETAIL_FIELDS, True)
 
     route_summary_rows = [[
         Paragraph("Route", header_style),
@@ -231,10 +242,10 @@ def build_trip_pdf_report(
             ]),
             ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
             ("VALIGN", (0, 0), (-1, -1), "TOP"),
-            ("LEFTPADDING", (0, 0), (-1, -1), 2),
-            ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-            ("TOPPADDING", (0, 0), (-1, -1), 3),
-            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4.5),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4.5),
         ]))
         return report_table
 
