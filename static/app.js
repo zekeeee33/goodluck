@@ -3699,6 +3699,22 @@ function tripReportGroupedTables(records, groupBy) {
   routes.forEach((route) => {
     route.label = route.identifier ? `Route ${route.identifier}` : "Route —";
   });
+  const driverGroups = groupTripReportRecords(records, "driver");
+  const driverRouteSummary = `
+    <section class="trip-report-section">
+      <h3>Summary Per Driver</h3>
+      <div class="table-wrap"><table class="trip-record-table trip-driver-route-summary-table">
+        <thead>
+          <tr><th rowspan="2">Driver</th>${routes.map((route) => `<th>${escapeHtml(route.label)}</th>`).join("")}<th rowspan="2">No. of Trips</th></tr>
+          <tr>${routes.map((route) => `<th>${escapeHtml(`${route.origin} → ${route.destination}`)}</th>`).join("")}</tr>
+        </thead>
+        <tbody>${driverGroups.map((driver) => `<tr>
+          <th scope="row">${escapeHtml(driver.name)}</th>
+          ${routes.map((route) => `<td>${formatNumber(route.records.filter((trip) => driver.records.includes(trip)).length)}</td>`).join("")}
+          <td><strong>${formatNumber(driver.records.length)}</strong></td>
+        </tr>`).join("")}</tbody>
+      </table></div>
+    </section>`;
   const routeSummary = `
     <section class="trip-report-section">
       <h3>Route Summary</h3>
@@ -3713,12 +3729,12 @@ function tripReportGroupedTables(records, groupBy) {
     </section>`;
 
   if (groupBy !== "driver") {
-    return `${routeSummary}<section class="trip-report-section">
+    return `${driverRouteSummary}${routeSummary}<section class="trip-report-section">
       <h3>Route Details</h3>
       ${tripTable(records, true)}
     </section>`;
   }
-  const driverSections = groupTripReportRecords(records, "driver").map((driver) => {
+  const driverSections = driverGroups.map((driver) => {
     const driverRouteRecords = new Map();
     for (const trip of driver.records) {
       const key = tripReportRouteKey(
@@ -3745,7 +3761,7 @@ function tripReportGroupedTables(records, groupBy) {
       </table></div>
     </section>`;
   }).join("");
-  return `<section class="trip-report-section"><h3>Per-Driver Trips and Movement</h3>${driverSections}</section>`;
+  return `${driverRouteSummary}<section class="trip-report-section"><h3>Per-Driver Trips and Movement</h3>${driverSections}</section>`;
 }
 
 function renderTripReports() {

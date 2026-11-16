@@ -196,6 +196,69 @@ def build_trip_pdf_report(
             Spacer(1, 3 * mm),
         ])
 
+    if routes:
+        matrix_rows = [[
+            Paragraph("Driver", header_style),
+            *[Paragraph(escape(route["label"]), header_style) for route in routes],
+            Paragraph("No. of Trips", header_style),
+        ], [
+            Paragraph("", header_style),
+            *[
+                Paragraph(
+                    escape(f"{route['origin']} → {route['destination']}"),
+                    header_style,
+                )
+                for route in routes
+            ],
+            Paragraph("", header_style),
+        ]]
+        for driver_name, driver_trips in drivers:
+            driver_trip_ids = {id(trip) for trip in driver_trips}
+            route_counts = [
+                sum(id(trip) in driver_trip_ids for trip in route["trips"])
+                for route in routes
+            ]
+            matrix_rows.append([
+                Paragraph(escape(driver_name), cell_style),
+                *[Paragraph(str(count), cell_style) for count in route_counts],
+                Paragraph(str(len(driver_trips)), cell_style),
+            ])
+        matrix_column_widths = [
+            available_width * 0.13,
+            *[
+                available_width * 0.78 / len(routes)
+                for _ in routes
+            ],
+            available_width * 0.09,
+        ]
+        matrix_table = Table(
+            matrix_rows,
+            colWidths=matrix_column_widths,
+            repeatRows=2,
+            hAlign="LEFT",
+            style=TableStyle([
+                ("SPAN", (0, 0), (0, 1)),
+                ("SPAN", (-1, 0), (-1, 1)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#EAF1F8")),
+                ("ROWBACKGROUNDS", (0, 2), (-1, -1), [
+                    colors.white, colors.HexColor("#EAF1F8"),
+                ]),
+                ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 2), (-1, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                ("TOPPADDING", (0, 0), (-1, -1), 4),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+            ]),
+        )
+        story.extend([
+            Paragraph("Summary Per Driver", group_style),
+            matrix_table,
+            Spacer(1, 3 * mm),
+        ])
+
     def trip_table(
         group_trips: list[dict[str, Any]],
         include_route: bool = False,
