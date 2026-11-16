@@ -3423,7 +3423,7 @@ function renderDriverRouteSummary(rows) {
   const drivers = new Map();
   for (const row of rows) {
     const routeNumber = row.route_number != null && row.route_number !== "" ? String(row.route_number) : null;
-    const routeLabel = row.route_label || (routeNumber ? `Route ${routeNumber}` : "Unknown route");
+    const routeLabel = routeNumber ? `Route ${routeNumber}` : "Route —";
     const route = {
       label: routeLabel,
       origin: row.origin || "Unknown origin",
@@ -3640,9 +3640,10 @@ function tripReportRevenueTotal(records) {
 }
 
 function tripReportRouteIdentifier(trip) {
-  const identifier = [trip.route_number, trip.route_pair, trip.route]
-    .find((value) => value != null && String(value).trim());
-  return identifier == null ? "" : String(identifier).trim();
+  const routeNumber = trip.route_number;
+  return routeNumber == null || !String(routeNumber).trim()
+    ? ""
+    : String(routeNumber).trim();
 }
 
 function tripReportRouteKey(identifier, origin, destination) {
@@ -3708,8 +3709,8 @@ function tripReportGroupedTables(records, groupBy) {
       undefined,
       { sensitivity: "base" },
     ));
-  routes.forEach((route, index) => {
-    route.label = route.identifier ? `Route ${route.identifier}` : `Route ${index + 1}`;
+  routes.forEach((route) => {
+      route.label = route.identifier ? `Route ${route.identifier}` : "Route —";
     route.revenue = tripReportRevenueTotal(route.records);
   });
   const routeSummary = `

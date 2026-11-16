@@ -12,6 +12,7 @@ from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
 from reportlab.platypus import (
     LongTable,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -325,6 +326,8 @@ def build_trip_pdf_report(
                 Spacer(1, 3 * mm),
             ])
     else:
+        if routes:
+            story.append(PageBreak())
         for route in routes:
             group_trips = route["trips"]
             story.append(Paragraph(

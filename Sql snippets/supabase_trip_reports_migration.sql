@@ -52,18 +52,27 @@ begin
             select jsonb_agg(jsonb_build_object('value', value, 'label', label) order by label)
             from (
                 select distinct
-                    coalesce(trip.route_number::text, nullif(trim(trip.route_pair), ''),
-                        nullif(trim(trip.route), '')) as value,
-                    coalesce(
-                        case when trip.route_number is not null
-                            then 'Route ' || trip.route_number::text end,
-                        nullif(trim(trip.route_pair), ''),
-                        nullif(trim(trip.route), '')
-                    ) as label
+                    coalesce(trip.route_number, route.route_number)::text as value,
+                    'Route ' || coalesce(trip.route_number, route.route_number)::text as label
                 from public.trips as trip
-                where trip.route_number is not null
-                   or nullif(trim(trip.route_pair), '') is not null
-                   or nullif(trim(trip.route), '') is not null
+                left join lateral (
+                    select truck_route.route_number
+                    from public.truck_routes as truck_route
+                    where truck_route.id = trip.route_id
+                       or (
+                           upper(trim(coalesce(trip.origin, ''))) in (
+                               upper(trim(truck_route.origin_code)),
+                               upper(trim(truck_route.origin_name))
+                           )
+                           and upper(trim(coalesce(trip.destination, ''))) in (
+                               upper(trim(truck_route.destination_code)),
+                               upper(trim(truck_route.destination_name))
+                           )
+                       )
+                    order by (truck_route.id = trip.route_id) desc, truck_route.id
+                    limit 1
+                ) as route on true
+                where trip.route_number is not null or route.route_number is not null
             ) as choices
             where value is not null and label is not null
         ), '[]'::jsonb),
@@ -153,7 +162,7 @@ begin
             trip.origin,
             trip.destination,
             trip.route,
-            trip.route_number,
+            coalesce(trip.route_number, route.route_number) as route_number,
             trip.route_pair,
             coalesce(nullif(trip.driver_name, ''), driver.name) as driver_name,
             trip.driver_id,
@@ -216,6 +225,23 @@ begin
         left join public.vehicles as truck
             on truck.id = coalesce(trip.truck_id, trip.vehicle_id)
         left join public.trailers as trailer on trailer.id = trip.trailer_id
+        left join lateral (
+            select truck_route.route_number
+            from public.truck_routes as truck_route
+            where truck_route.id = trip.route_id
+               or (
+                   upper(trim(coalesce(trip.origin, ''))) in (
+                       upper(trim(truck_route.origin_code)),
+                       upper(trim(truck_route.origin_name))
+                   )
+                   and upper(trim(coalesce(trip.destination, ''))) in (
+                       upper(trim(truck_route.destination_code)),
+                       upper(trim(truck_route.destination_name))
+                   )
+               )
+            order by (truck_route.id = trip.route_id) desc, truck_route.id
+            limit 1
+        ) as route on true
         left join lateral (
             select movement_row.*
             from public.dispatch_movements as movement_row

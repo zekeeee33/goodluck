@@ -142,12 +142,8 @@ def completed_trip_records(
 
 
 def _route_identifier(trip: dict[str, Any]) -> str:
-    for field in ("route_number", "route_pair", "route"):
-        raw_value = trip.get(field)
-        value = str(raw_value).strip() if raw_value is not None else ""
-        if value:
-            return value
-    return ""
+    route_number = trip.get("route_number")
+    return str(route_number).strip() if route_number not in (None, "") else ""
 
 
 def group_trip_records_by_route(
@@ -160,14 +156,9 @@ def group_trip_records_by_route(
         origin = " ".join(str(trip.get("origin") or "").split())
         destination = " ".join(str(trip.get("destination") or "").split())
         route_number = trip.get("route_number")
-        route_pair = trip.get("route_pair")
         if route_number not in (None, ""):
             key = ("route_number", str(route_number).strip().casefold())
             identifier = str(route_number)
-        elif route_pair not in (None, ""):
-            normalized_pair = " ".join(str(route_pair).split()).casefold()
-            key = ("route_pair", normalized_pair)
-            identifier = str(route_pair).strip()
         else:
             normalized_origin = " ".join(str(origin or "Unknown origin").split()).casefold()
             normalized_destination = " ".join(str(destination or "Unknown destination").split()).casefold()
@@ -175,13 +166,13 @@ def group_trip_records_by_route(
                 "origin_destination",
                 f"{normalized_origin} -> {normalized_destination}",
             )
-            identifier = f"{origin or 'Unknown origin'} → {destination or 'Unknown destination'}"
+            identifier = ""
 
         groups[key].append(trip)
         labels.setdefault(
             key,
             (
-                identifier or str(len(groups) + 1),
+                identifier,
                 origin or "Unknown origin",
                 destination or "Unknown destination",
             ),
@@ -196,7 +187,7 @@ def group_trip_records_by_route(
         ),
     )
     result = []
-    for route_index, key in enumerate(ordered_keys, start=1):
+    for key in ordered_keys:
         identifier, origin, destination = labels[key]
         route_number = next(
             (
@@ -209,11 +200,8 @@ def group_trip_records_by_route(
         if route_number not in (None, ""):
             identifier = str(route_number)
         result.append({
-            "identifier": identifier or str(route_index),
-            "label": (
-                f"Route {identifier}" if identifier
-                else f"Route {route_index}"
-            ),
+            "identifier": identifier,
+            "label": f"Route {identifier}" if identifier else "Route —",
             "origin": origin or "Unknown origin",
             "destination": destination or "Unknown destination",
             "trips": groups[key],

@@ -1,3 +1,4 @@
+import re
 import unittest
 from io import BytesIO
 
@@ -171,6 +172,18 @@ class TripCountReportTests(unittest.TestCase):
         self.assertEqual([group["origin"] for group in route_groups], ["DAV1", "DAV2"])
         self.assertEqual([len(group["trips"]) for group in route_groups], [2, 1])
 
+    def test_route_grouping_never_uses_route_description_as_label(self):
+        trips = [
+            {
+                **trip(1, origin="Davao Bottling Plant 1", destination="GENSAN Distribution Center"),
+                "route_number": None,
+                "route_pair": "Davao Bottling Plant 1 → GENSAN Distribution Center",
+            },
+        ]
+        route_groups = group_trip_records_by_route(trips)
+        self.assertEqual(route_groups[0]["label"], "Route —")
+        self.assertEqual(route_groups[0]["identifier"], "")
+
     def test_trip_pdf_export_is_generated_with_trip_count_field(self):
         pdf = build_trip_pdf_report(
             self.trips,
@@ -178,6 +191,14 @@ class TripCountReportTests(unittest.TestCase):
         )
         self.assertIsInstance(pdf, BytesIO)
         self.assertTrue(pdf.getvalue().startswith(b"%PDF-"))
+
+    def test_trip_pdf_starts_route_details_on_a_new_page(self):
+        pdf = build_trip_pdf_report(
+            [trip(1, origin="DAV1", destination="DAV2")],
+            {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
+        )
+        page_count = len(re.findall(rb"/Type\s*/Page\b", pdf.getvalue()))
+        self.assertEqual(page_count, 2)
 
 
 if __name__ == "__main__":

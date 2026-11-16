@@ -53,7 +53,7 @@ begin
             trip.ism_no,
             trip.origin,
             trip.destination,
-            trip.route_number,
+            coalesce(trip.route_number, route.route_number) as route_number,
             trip.route_pair,
             coalesce(nullif(trip.driver_name, ''), driver.name) as driver_name,
             trip.driver_id,
@@ -129,6 +129,23 @@ begin
         left join public.drivers as driver on driver.id = trip.driver_id
         left join public.vehicles as truck on truck.id = trip.truck_id
         left join public.trailers as trailer on trailer.id = trip.trailer_id
+        left join lateral (
+            select truck_route.route_number
+            from public.truck_routes as truck_route
+            where truck_route.id = trip.route_id
+               or (
+                   upper(trim(coalesce(trip.origin, ''))) in (
+                       upper(trim(truck_route.origin_code)),
+                       upper(trim(truck_route.origin_name))
+                   )
+                   and upper(trim(coalesce(trip.destination, ''))) in (
+                       upper(trim(truck_route.destination_code)),
+                       upper(trim(truck_route.destination_name))
+                   )
+               )
+            order by (truck_route.id = trip.route_id) desc, truck_route.id
+            limit 1
+        ) as route on true
         left join public.dispatch_movements as movement
             on movement.id = trip.dispatch_movement_id
             or movement.canonical_trip_id = trip.id
@@ -164,10 +181,7 @@ begin
             route_number,
             case
                 when route_number is not null then 'Route ' || route_number::text
-                else coalesce(
-                    nullif(trim(route_pair), ''),
-                    'Unknown route'
-                )
+                else 'Route —'
             end as route_label,
             min(origin) as origin,
             min(destination) as destination,
@@ -178,10 +192,7 @@ begin
             route_number,
             case
                 when route_number is not null then 'Route ' || route_number::text
-                else coalesce(
-                    nullif(trim(route_pair), ''),
-                    'Unknown route'
-                )
+                else 'Route —'
             end
     ),
     page_rows as (
