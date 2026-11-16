@@ -302,15 +302,7 @@ def build_trip_pdf_report(
     else:
         if routes:
             story.append(PageBreak())
-        for route in routes:
-            group_trips = route["trips"]
-            story.append(Paragraph(
-                f"{escape(route['label'])} | Origin: {escape(route['origin'])} | "
-                f"Destination: {escape(route['destination'])}",
-                group_style,
-            ))
-            story.append(trip_table(group_trips))
-            story.append(Spacer(1, 2 * mm))
+        story.append(trip_table(trips, include_route=True))
 
     story.append(Spacer(1, 3 * mm))
     story.append(Paragraph(

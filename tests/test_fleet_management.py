@@ -890,7 +890,7 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(jane_sheet["C7"].value, "Destination")
         self.assertEqual(jane_sheet["D7"].value, "Trip Count")
         self.assertEqual(jane_sheet["E7"].value, "Trip Date")
-        self.assertEqual(jane_sheet["A8"].value, "Route 2")
+        self.assertEqual(jane_sheet["A8"].value, "Route —")
         self.assertEqual(jane_sheet["B8"].value, "Manila")
         self.assertEqual(jane_sheet["C8"].value, "Cavite")
         self.assertEqual(jane_sheet["D8"].value, 3)
@@ -900,12 +900,12 @@ class AdminTripReportsTests(unittest.TestCase):
             if jane_sheet.cell(row=row, column=1).value == "Movement Summary"
         )
         self.assertGreater(jane_summary_row, 8)
-        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=1).value, "Route 2")
+        self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=1).value, "Route —")
         self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=2).value, "Manila")
         self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=3).value, "Cavite")
         self.assertEqual(jane_sheet.cell(row=jane_summary_row + 2, column=4).value, 1)
         self.assertEqual(john_sheet["A5"].value, "John Doe | Total Trips: 2")
-        self.assertEqual(john_sheet["A8"].value, "Route 1")
+        self.assertEqual(john_sheet["A8"].value, "Route —")
         self.assertEqual(john_sheet["D8"].value, 1)
         self.assertEqual(john_sheet["E8"].value.strftime("%Y-%m-%d"), "2026-01-03")
         self.assertEqual(john_sheet["D9"].value, 2)
@@ -927,34 +927,36 @@ class AdminTripReportsTests(unittest.TestCase):
                 if all_trips.cell(row=row, column=3).value == "John Doe"
             ],
         )
-        self.assertEqual(float(all_trips["B6"].value), 300.10)
-        self.assertAlmostEqual(float(all_trips["B7"].value), 150.05)
         route_summary = workbook["Route Summaries"]
-        self.assertEqual(route_summary["A6"].value, "Route 1")
+        self.assertEqual(route_summary["A6"].value, "Route —")
         self.assertEqual(route_summary["E6"].value, 2)
-        self.assertEqual(route_summary["A7"].value, "Route 2")
+        self.assertEqual(route_summary["A7"].value, "Route —")
         self.assertEqual(route_summary["E7"].value, 1)
         self.assertEqual(workbook["Overall Summary"]["B5"].value, 3)
         self.assertEqual(workbook["Overall Summary"]["B6"].value, 2)
         self.assertEqual(workbook["Overall Summary"]["B7"].value, 2)
         overall_summary = workbook["Overall Summary"]
         self.assertEqual(
-            [overall_summary.cell(row=12, column=column).value for column in range(1, 6)],
-            ["Route", "Origin", "Destination", "Total Trips", "Total Revenue"],
+            [overall_summary.cell(row=12, column=column).value for column in range(1, 5)],
+            ["Route", "Origin", "Destination", "Total Trips"],
         )
         self.assertEqual(overall_summary["B13"].value, "Davao")
         self.assertEqual(overall_summary["C13"].value, "Manila")
-        self.assertEqual(
-            workbook["Route Details"]["A5"].value,
-            "Route 1 | Origin: Davao | Destination: Manila",
-        )
-        self.assertEqual(workbook["Route Details"]["B6"].value, "Origin")
-        self.assertEqual(workbook["Route Details"]["C6"].value, "Destination")
-        self.assertEqual(workbook["Route Details"]["D6"].value, "Trip Count")
+        route_details = workbook["Route Details"]
+        self.assertEqual(route_details["A5"].value, "Route")
+        self.assertEqual(route_details["B5"].value, "Origin")
+        self.assertEqual(route_details["C5"].value, "Destination")
+        self.assertEqual(route_details["D5"].value, "Trip Count")
+        self.assertEqual(len(route_details.tables), 1)
         route_detail_headers = [
-            workbook["Route Details"].cell(row=6, column=column).value
-            for column in range(4, workbook["Route Details"].max_column + 1)
+            route_details.cell(row=5, column=column).value
+            for column in range(4, route_details.max_column + 1)
         ]
+        self.assertEqual(route_details.max_row, 8)
+        self.assertEqual(
+            [route_details.cell(row=row, column=1).value for row in range(6, 9)],
+            ["Route —", "Route —", "Route —"],
+        )
         self.assertNotIn("Trip ID", route_detail_headers)
         self.assertNotIn("Origin", route_detail_headers)
         self.assertNotIn("Destination", route_detail_headers)

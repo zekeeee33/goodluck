@@ -3715,11 +3715,7 @@ function tripReportGroupedTables(records, groupBy) {
   if (groupBy !== "driver") {
     return `${routeSummary}<section class="trip-report-section">
       <h3>Route Details</h3>
-      ${routes.map((route) => `
-        <section class="trip-report-driver-group">
-          <h4>${escapeHtml(`${route.label}: ${route.origin} → ${route.destination}`)}</h4>
-          ${tripTable(route.records)}
-        </section>`).join("")}
+      ${tripTable(records, true)}
     </section>`;
   }
   const driverSections = groupTripReportRecords(records, "driver").map((driver) => {

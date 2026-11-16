@@ -483,34 +483,28 @@ def build_filtered_trip_excel_report(
         *[label for _, label in ROUTE_DETAIL_FIELDS],
     ]
     write_sheet_title(route_details, "Detailed Route Records", len(route_detail_headers))
-    row_number = 5
-    for route in routes:
-        route_details.merge_cells(
-            start_row=row_number, start_column=1,
-            end_row=row_number, end_column=len(route_detail_headers),
+    write_table_header(route_details, 5, route_detail_headers)
+    route_by_trip_identity = {
+        id(trip): route
+        for route in routes
+        for trip in route["trips"]
+    }
+    for row_number, trip in enumerate(trips, start=6):
+        route = route_by_trip_identity[id(trip)]
+        route_details.cell(row=row_number, column=1, value=route["label"])
+        route_details.cell(row=row_number, column=2, value=route["origin"])
+        route_details.cell(row=row_number, column=3, value=route["destination"])
+        write_trip_row(
+            route_details, row_number, trip, ROUTE_DETAIL_FIELDS,
+            start_column=4,
         )
-        route_title = route_details.cell(
-            row=row_number, column=1,
-            value=(
-                f"{route['label']} | Origin: {route['origin']} | "
-                f"Destination: {route['destination']}"
-            ),
+    if trips:
+        route_details_table = Table(
+            displayName="RouteDetailRecords",
+            ref=f"A5:{get_column_letter(len(route_detail_headers))}{5 + len(trips)}",
         )
-        route_title.font = Font(bold=True, color="17365D")
-        route_title.fill = group_fill
-        row_number += 1
-        write_table_header(route_details, row_number, route_detail_headers)
-        row_number += 1
-        for trip in route["trips"]:
-            route_details.cell(row=row_number, column=1, value=route["label"])
-            route_details.cell(row=row_number, column=2, value=route["origin"])
-            route_details.cell(row=row_number, column=3, value=route["destination"])
-            write_trip_row(
-                route_details, row_number, trip, ROUTE_DETAIL_FIELDS,
-                start_column=4,
-            )
-            row_number += 1
-        row_number += 1
+        route_details_table.tableStyleInfo = table_style
+        route_details.add_table(route_details_table)
     route_details.freeze_panes = "A6"
 
     used_driver_sheet_names: set[str] = set()

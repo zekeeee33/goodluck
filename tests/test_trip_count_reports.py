@@ -84,8 +84,13 @@ class TripCountReportTests(unittest.TestCase):
         ))
 
     def test_filtered_excel_details_include_trip_count(self):
+        trips = [
+            {**self.trips[0], "route_number": 2, "origin": "DAV1", "destination": "DAV2"},
+            {**self.trips[1], "route_number": 1, "origin": "DAV1", "destination": "GENSAN"},
+            {**self.trips[2], "route_number": 2, "origin": "DAV1", "destination": "DAV2"},
+        ]
         workbook = load_workbook(build_filtered_trip_excel_report(
-            self.trips,
+            trips,
             {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
         ))
         self.assertTrue(all(
@@ -95,11 +100,17 @@ class TripCountReportTests(unittest.TestCase):
         ))
         worksheet = workbook["Route Details"]
         self.assertEqual(worksheet["B1"].value, "Detailed Route Records")
-        self.assertEqual(worksheet["B6"].value, "Origin")
-        self.assertEqual(worksheet["C6"].value, "Destination")
-        self.assertEqual(worksheet["D6"].value, "Trip Count")
+        self.assertEqual(worksheet["A5"].value, "Route")
+        self.assertEqual(worksheet["B5"].value, "Origin")
+        self.assertEqual(worksheet["C5"].value, "Destination")
+        self.assertEqual(worksheet["D5"].value, "Trip Count")
+        self.assertEqual(len(worksheet.tables), 1)
         self.assertEqual(
-            [worksheet.cell(row=row, column=4).value for row in range(7, 10)],
+            [worksheet.cell(row=row, column=1).value for row in range(6, 9)],
+            ["Route 1", "Route 2", "Route 2"],
+        )
+        self.assertEqual(
+            [worksheet.cell(row=row, column=4).value for row in range(6, 9)],
             [1, 2, 3],
         )
         self.assertNotIn(
