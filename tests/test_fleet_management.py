@@ -2293,7 +2293,7 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertEqual(response.json["trips"][0]["ism_no"], "ISM-API")
         self.assertEqual(response.json["trips"][0]["rate"], "200.00")
 
-    def test_payroll_excel_export_matches_selected_report_filters(self):
+    def test_payroll_pdf_export_matches_selected_report_filters(self):
         client = FakeSupabaseClient()
         manager = FleetManager(client=client)
         vehicle = manager.add_vehicle("PAY-XLS-1", "Toyota", "Hiace", 2022)
@@ -2316,48 +2316,33 @@ class PayrollCalculationTests(unittest.TestCase):
         )
         with patch.object(web_app, "manager", manager), patch.dict(
             web_app.app.config, {"TESTING": True, "TEST_AUTH_BYPASS": True}
-        ):
+        ), patch.object(
+            web_app,
+            "build_payroll_pdf_report",
+            wraps=web_app.build_payroll_pdf_report,
+        ) as build_report:
             response = web_app.app.test_client().get(
                 "/api/payroll/export?start_date=2026-10-01&end_date=2026-10-15"
                 f"&driver_id={first_driver['id']}&ism_no=MATCH&origin=DAV1&destination=DAV2"
             )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response.mimetype,
-            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        self.assertIn("payroll-2026-10-01-to-2026-10-15.xlsx", response.headers["Content-Disposition"])
-        workbook = load_workbook(BytesIO(response.data), data_only=True)
-        self.assertEqual(
-            workbook.sheetnames,
-            [
-                "Payroll Summary", "Trip Details", "Cash Advances",
-                "Overdraft Ledger", "Review Items", "Audit History",
-                "Payslip Excel Payroll Driver",
-            ],
-        )
-        summary = workbook["Payroll Summary"]
-        self.assertEqual(summary["B6"].value, 1)
-        self.assertEqual(summary["B7"].value, 1)
-        self.assertEqual(summary["A16"].value, "Excel Payroll Driver")
-        self.assertEqual(summary["B16"].value, 1)
-        trips = workbook["Trip Details"]
-        self.assertEqual(trips["B6"].value, "Excel Payroll Driver")
-        self.assertEqual(trips["C6"].value, "ISM-XLS-MATCH")
-        self.assertEqual(trips["F6"].value, 200)
-        payslip = workbook["Payslip Excel Payroll Driver"]
-        assert_excel_report_branding(self, workbook)
-        self.assertEqual(payslip["B1"].value, "EMPLOYEE PAYSLIP")
-        self.assertEqual(payslip["B7"].value, "Excel Payroll Driver")
-        self.assertEqual(payslip["B12"].value, "ISM-XLS-MATCH")
-        self.assertEqual(payslip["E12"].value, 200)
-        self.assertEqual(payslip["F17"].value, 400)
-        self.assertEqual(payslip.page_setup.fitToWidth, 1)
-        self.assertEqual(payslip.page_setup.fitToHeight, 1)
-        self.assertEqual(payslip.print_area, "'Payslip Excel Payroll Driver'!$A$1:$F$28")
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertIn("payroll-2026-10-01-to-2026-10-15.pdf", response.headers["Content-Disposition"])
+        self.assertTrue(response.data.startswith(b"%PDF-"))
+        self.assertTrue(response.data.rstrip().endswith(b"%%EOF"))
 
-    def test_payroll_excel_export_creates_one_payslip_sheet_per_driver(self):
+        report, trips, drivers, start_date, end_date, filters = build_report.call_args.args
+        self.assertEqual((start_date, end_date), ("2026-10-01", "2026-10-15"))
+        self.assertEqual(filters["driver_id"], "Excel Payroll Driver")
+        self.assertEqual(filters["ism_no"], "MATCH")
+        self.assertEqual(filters["origin"], "DAV1")
+        self.assertEqual(filters["destination"], "DAV2")
+        self.assertEqual([trip["ism_no"] for trip in trips], ["ISM-XLS-MATCH"])
+        self.assertEqual([driver["driver_name"] for driver in drivers], ["Excel Payroll Driver"])
+        self.assertEqual(len(report["drivers"]), 2)
+
+    def test_payroll_pdf_export_includes_each_driver_for_printable_statements(self):
         client = FakeSupabaseClient()
         manager = FleetManager(client=client)
         vehicle = manager.add_vehicle("PAY-XLS-2", "Toyota", "Hiace", 2022)
@@ -2373,22 +2358,26 @@ class PayrollCalculationTests(unittest.TestCase):
             )
         with patch.object(web_app, "manager", manager), patch.dict(
             web_app.app.config, {"TESTING": True, "TEST_AUTH_BYPASS": True}
-        ):
+        ), patch.object(
+            web_app,
+            "build_payroll_pdf_report",
+            wraps=web_app.build_payroll_pdf_report,
+        ) as build_report:
             response = web_app.app.test_client().get(
                 "/api/payroll/export?start_date=2026-10-01&end_date=2026-10-15"
             )
 
         self.assertEqual(response.status_code, 200)
-        workbook = load_workbook(BytesIO(response.data), data_only=True)
-        self.assertIn("Payslip First Payslip Driver", workbook.sheetnames)
-        self.assertIn("Payslip Second Payslip Driver", workbook.sheetnames)
+        self.assertEqual(response.mimetype, "application/pdf")
+        self.assertTrue(response.data.startswith(b"%PDF-"))
+        self.assertTrue(response.data.rstrip().endswith(b"%%EOF"))
+        report, trips, drivers, _, _, _ = build_report.call_args.args
         self.assertEqual(
-            [
-                name for name in workbook.sheetnames
-                if name.startswith("Payslip ")
-            ],
-            ["Payslip First Payslip Driver", "Payslip Second Payslip Driver"],
+            [driver["driver_name"] for driver in drivers],
+            ["First Payslip Driver", "Second Payslip Driver"],
         )
+        self.assertEqual(len(report["drivers"]), 2)
+        self.assertEqual(len(trips), 2)
 
 
 class FakeAuthApiError(Exception):

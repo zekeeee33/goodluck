@@ -94,7 +94,7 @@ Payroll and revenue
   ledgers, and snapshots reviewed trip/rate data.
 - Finalization is performed through a database function intended to be atomic
   and to prevent the same trip from being finalized in multiple periods.
-- Payroll supports formatted Excel export.
+- Payroll supports a formatted, print-ready PDF export with driver payslips.
 - The administrator-only revenue dashboard reports hauling performance,
   saved rates, and recorded expenses, and supports audited adjustments/status.
 - Revenue totals are intentionally provisional: the documented expense scope

@@ -6162,7 +6162,7 @@ function renderPayroll() {
   }).join("");
   return `
     <div class="payroll-page">
-    ${header("FINANCE", "Payroll", "Review route-based earnings, advances, overdrafts, and driver payroll.", '<button class="button button-secondary" data-action="payroll-export" type="button">Export Excel</button>')}
+    ${header("FINANCE", "Payroll", "Review route-based earnings, advances, overdrafts, and driver payroll.", '<button class="button button-secondary" data-action="payroll-export" type="button">Export PDF</button>')}
     <section class="panel payroll-period-bar payroll-section payroll-period-details">
       <div class="panel-heading"><div><p class="eyebrow">PAY PERIOD</p><h2>Employee &amp; pay period details</h2></div><div class="page-heading-actions"><span class="badge badge-${escapeHtml(status)}">${escapeHtml(status)}</span>${status === "finalized" && report?.period?.id ? '<button class="button button-secondary" data-action="payroll-reopen" type="button">Reopen for regeneration</button>' : ""}</div></div>
       <form id="payroll-period-form" class="payroll-toolbar">
@@ -7463,7 +7463,7 @@ async function exportPayrollReport() {
       }
       if (response.status === 404) {
         throw new Error(
-          "The payroll Excel export endpoint is unavailable. Restart the Flask server or redeploy the latest app, then refresh this page.",
+          "The payroll PDF export endpoint is unavailable. Restart the Flask server or redeploy the latest app, then refresh this page.",
         );
       }
       throw new Error(payload.error || `Payroll export failed (${response.status}).`);
@@ -7472,7 +7472,7 @@ async function exportPayrollReport() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `payroll-${state.payrollPeriod.start_date}-to-${state.payrollPeriod.end_date}.xlsx`;
+    anchor.download = `payroll-${state.payrollPeriod.start_date}-to-${state.payrollPeriod.end_date}.pdf`;
     anchor.click();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
   } catch (error) {

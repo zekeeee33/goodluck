@@ -382,7 +382,7 @@ credentials were rejected.
 The **Export Excel report** action downloads a pre-formatted `.xlsx` workbook
 with a dashboard summary and separate worksheets for trucks, trailers, drivers,
 assignments, maintenance, fuel logs, and trips.
-The Fuel Logs, Trips, and Payroll tabs also provide top-right Excel export
+The Fuel Logs and Trips tabs also provide top-right Excel export
 actions for focused, print-ready workbooks; fuel exports respect the current
 search text.
 
@@ -429,7 +429,8 @@ values if trips or route rules later change. Cash advances must be recorded befo
 review; overdrafts are recorded as explicit opening/new ledger entries and are
 never inferred from negative pay. Overdraft settlement is separately confirmed
 at finalization. Claims are shown as Coming Soon and do not affect pay.
-Payroll reports can be exported as a formatted Excel workbook. Restart the Flask
+Payroll reports can be exported as a formatted, print-ready PDF containing the
+filtered payroll summary, detail ledgers, and driver payslips. Restart the Flask
 server or redeploy the application after updating the backend so the payroll
 export endpoint is registered.
 

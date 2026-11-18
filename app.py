@@ -27,7 +27,6 @@ from excel_report import (
     build_excel_report,
     build_filtered_trip_excel_report,
     build_fuel_excel_report,
-    build_payroll_excel_report,
     build_trip_excel_report,
     build_tire_excel_report,
 )
@@ -38,6 +37,7 @@ from fleet_management import (
     _supabase_project_url,
 )
 from manifest_ocr import extract_manifest_fields, scan_manifest_image
+from payroll_pdf_report import build_payroll_pdf_report
 from trip_pdf_report import build_trip_pdf_report
 from trip_report_utils import (
     TRIP_REPORT_GROUPINGS,
@@ -3709,12 +3709,12 @@ def export_payroll_report() -> Any:
     if selected_driver:
         filters["driver_id"] = selected_driver
     return send_file(
-        build_payroll_excel_report(
+        build_payroll_pdf_report(
             report, trips, drivers, start_date, end_date, filters
         ),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        mimetype="application/pdf",
         as_attachment=True,
-        download_name=f"payroll-{start_date}-to-{end_date}.xlsx",
+        download_name=f"payroll-{start_date}-to-{end_date}.pdf",
     )
 
 
