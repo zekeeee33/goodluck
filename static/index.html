@@ -10,10 +10,18 @@
     <title>Good Luck Forwarding Systems Inc. Fleet Management System</title>
     <link rel="icon" type="image/png" href="/static/glfs-logo.png" />
     <script src="/static/theme.js"></script>
-    <link rel="stylesheet" href="/static/tailwind.generated.css?v=driver-route-summary-1" />
-    <script src="/static/app.js?v=driver-route-summary-1" defer></script>
+    <link rel="stylesheet" href="/static/tailwind.generated.css?v=driver-route-summary-2" />
+    <script src="/static/app.js?v=driver-route-summary-2" defer></script>
   </head>
   <body>
+    <div class="loading-screen" id="app-loading-screen" role="status" aria-live="polite">
+      <div class="loading-screen-content">
+        <img class="loading-screen-logo" src="/static/glfs-logo.png" alt="" />
+        <span class="loading-screen-spinner" aria-hidden="true"></span>
+        <strong>Logging in, please wait</strong>
+        <span class="loading-screen-message">Loading your fleet data…</span>
+      </div>
+    </div>
     <div class="app-shell min-h-screen bg-fleet-canvas text-fleet-ink">
       <header class="sidebar border-b border-[var(--border)] bg-fleet-primary text-fleet-on-primary">
         <a class="brand" href="#dashboard" aria-label="Fleet management home">
@@ -121,6 +129,9 @@
               <div class="nav-mega-grid nav-mega-grid-single">
                 <a class="nav-link nav-item" href="#payroll" data-page="payroll" aria-label="Payroll">
                   <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M7 21V4h6a4 4 0 0 1 0 8H7m0-4h10"/></svg><span><span class="nav-link-label">Payroll</span><small>Driver statements and payroll review</small></span>
+                </a>
+                <a class="nav-link nav-item" href="#generated-payroll" data-page="generated-payroll" data-role="administrator" aria-label="Generated Payroll">
+                  <svg class="nav-item-icon" aria-hidden="true" viewBox="0 0 24 24"><path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z"/><path d="M14 3.5V8h4M8 12h8M8 16h8"/></svg><span><span class="nav-link-label">Generated Payroll</span><small>Saved payroll reports and printable PDFs</small></span>
                 </a>
               </div>
             </div>

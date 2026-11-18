@@ -13,6 +13,7 @@ const TITLES = {
   "trip-records": "Trip Records",
   "completed-trips": "Completed Trips",
   payroll: "Payroll",
+  "generated-payroll": "Generated Payroll",
   revenue: "Revenue & hauling performance",
   settings: "Settings",
 };
@@ -257,6 +258,15 @@ const state = {
   payroll: null,
   payrollKey: "",
   payrollRequestedKey: "",
+  generatedPayroll: {
+    reports: [],
+    page: 1,
+    pageSize: 25,
+    total: 0,
+    loading: false,
+    loaded: false,
+    error: "",
+  },
   tires: {
     items: [],
     summary: null,
@@ -461,6 +471,7 @@ const state = {
   payrollFilters: { driver_id: "", ism_no: "", origin: "", destination: "" },
 };
 const view = document.querySelector("#app-view");
+const loadingScreen = document.querySelector("#app-loading-screen");
 const appShell = document.querySelector(".app-shell");
 const sidebarToggle = document.querySelector("#sidebar-collapse");
 const mobileNavToggle = document.querySelector("#mobile-nav-toggle");
@@ -958,6 +969,7 @@ async function loadData({ force = false } = {}) {
         showToast(user.completed_trip_access_error, "error");
       }
       registerSessionActivity();
+      loadingScreen.hidden = true;
       render();
       if (user.role === "dispatcher") {
         state.dispatch.dashboard.loaded = false;
@@ -966,6 +978,7 @@ async function loadData({ force = false } = {}) {
       initializeNotificationPolling();
       return state.data;
     } catch (error) {
+      loadingScreen.hidden = true;
       view.innerHTML = `
         <section class="error-card">
           <p class="eyebrow">Connection problem</p>
@@ -6237,6 +6250,68 @@ function renderPayroll() {
     </section>`;
 }
 
+function renderGeneratedPayroll() {
+  const generated = state.generatedPayroll;
+  if (!generated.loading && !generated.loaded) {
+    generated.loading = true;
+    generated.error = "";
+    api(`/api/payroll/generated?page=${generated.page}`)
+      .then((result) => {
+        generated.reports = result.reports || [];
+        generated.total = Number(result.total || 0);
+        generated.pageSize = Number(result.page_size || generated.pageSize);
+        generated.loaded = true;
+      })
+      .catch((error) => {
+        generated.error = error.message || "Could not load generated payroll.";
+      })
+      .finally(() => {
+        generated.loading = false;
+        if (state.page === "generated-payroll") render();
+      });
+  }
+  const reports = generated.reports;
+  const pageCount = Math.max(1, Math.ceil(generated.total / generated.pageSize));
+  const content = generated.loading && !generated.loaded
+    ? '<section class="panel"><p>Loading saved payroll reports…</p></section>'
+    : generated.error && !generated.loaded
+      ? `<section class="error-card" role="alert"><p>${escapeHtml(generated.error)}</p><button class="button button-secondary" type="button" data-action="generated-payroll-retry">Retry</button></section>`
+      : reports.length
+        ? `<section class="panel records-panel">
+            <p class="record-count">${formatNumber(generated.total)} saved reports · newest first</p>
+            <div class="table-wrap"><table class="data-table">
+              <thead><tr><th>Pay period</th><th>Generated</th><th>Status</th><th>Drivers</th><th>Eligible trips</th><th>Gross payroll</th><th>Net payable</th><th>Filters</th><th>PDF</th></tr></thead>
+              <tbody>${reports.map((report) => {
+                const filters = Object.entries(report.filters || {})
+                  .filter(([, value]) => value)
+                  .map(([key, value]) => `${key.replace(/_/g, " ")}: ${value}`)
+                  .join(" · ");
+                return `<tr>
+                  <td>${escapeHtml(report.start_date)} – ${escapeHtml(report.end_date)}</td>
+                  <td>${escapeHtml(report.created_at ? new Date(report.created_at).toLocaleString() : "—")}</td>
+                  <td>${statusBadge(report.status)}</td>
+                  <td>${formatNumber(report.driver_count)}</td>
+                  <td>${formatNumber(report.eligible_trip_count)}</td>
+                  <td>${formatCurrency(report.gross_pay)}</td>
+                  <td>${formatCurrency(report.net_payable)}</td>
+                  <td>${escapeHtml(filters || "None")}</td>
+                  <td><button class="button button-secondary button-small" type="button" data-action="generated-payroll-pdf" data-id="${escapeHtml(report.id)}">Download PDF</button></td>
+                </tr>`;
+              }).join("")}</tbody>
+            </table></div>
+            ${pageCount > 1 ? `<div class="page-heading-actions" aria-label="Generated payroll pages">
+              <span class="record-count">Page ${formatNumber(generated.page)} of ${formatNumber(pageCount)}</span>
+              <button class="button button-secondary button-small" type="button" data-action="generated-payroll-page" data-page="${generated.page - 1}" ${generated.page <= 1 ? "disabled" : ""}>Previous</button>
+              <button class="button button-secondary button-small" type="button" data-action="generated-payroll-page" data-page="${generated.page + 1}" ${generated.page >= pageCount ? "disabled" : ""}>Next</button>
+            </div>` : ""}
+          </section>`
+        : '<section class="panel empty-state"><span>₱</span><strong>No generated payroll reports yet</strong><small>Generate a payroll report from Payroll. Saved reports will appear here.</small></section>';
+  return `<div class="payroll-page">
+    ${header("FINANCE", "Generated Payroll", "Saved payroll snapshots for later review and printing.", '<button class="button button-secondary" type="button" data-action="generated-payroll-retry">Refresh</button>')}
+    ${content}
+  </div>`;
+}
+
 function settingsSectionNavigation() {
   const sections = [
     ["truck-rates", "Truck route rates"],
@@ -6481,6 +6556,11 @@ function render() {
     state.page = "dashboard";
     showToast("Trip reports are only available to administrators.", "error");
   }
+  if (state.page === "generated-payroll" && !isAdministrator) {
+    location.hash = "dashboard";
+    state.page = "dashboard";
+    showToast("Generated payroll is only available to administrators.", "error");
+  }
   syncCompletedTripsNavigation();
   document.querySelectorAll(".nav-link").forEach((link) => {
     link.hidden = (isDispatcher && link.dataset.page && !dispatcherPages.has(link.dataset.page))
@@ -6518,6 +6598,7 @@ function render() {
     view.innerHTML = state.page === "dashboard"
       ? renderDashboard()
       : state.page === "payroll" ? renderPayroll()
+        : state.page === "generated-payroll" ? renderGeneratedPayroll()
         : state.page === "revenue" ? revenueDashboardMarkup(state.revenue.report)
             : state.page === "trip-reports" ? renderTripReports()
             : state.page === "trip-records" ? renderTripRecords()
@@ -7308,10 +7389,21 @@ async function submitPayrollForm(form) {
         throw new Error("Period start must be on or before period end.");
       }
       state.payrollPeriod = { start_date: values.start_date, end_date: values.end_date };
-      state.payroll = null;
-      state.payrollKey = "";
-      state.payrollRequestedKey = "";
+      const generated = await api("/api/payroll/generated", {
+        method: "POST",
+        body: JSON.stringify({
+          ...state.payrollPeriod,
+          filters: state.payrollFilters,
+        }),
+      });
+      state.payroll = generated.report;
+      state.payrollKey = `${values.start_date}:${values.end_date}`;
+      state.payrollRequestedKey = state.payrollKey;
+      state.generatedPayroll.page = 1;
+      state.generatedPayroll.loaded = false;
+      state.generatedPayroll.error = "";
       render();
+      showToast("Payroll report generated and saved to Generated Payroll.");
       return;
     }
     if (form.id === "cash-advance-form") {
@@ -7444,6 +7536,19 @@ async function payrollWorkflowAction(action) {
   }
 }
 
+async function readPayrollPdf(response) {
+  const blob = await response.blob();
+  const contentType = response.headers.get("content-type")
+    ?.split(";", 1)[0].trim().toLowerCase();
+  const signature = await blob.slice(0, 5).text();
+  if (contentType !== "application/pdf" || signature !== "%PDF-") {
+    throw new Error(
+      "The server returned a non-PDF payroll export. Restart the Flask app or redeploy the latest code, then try again.",
+    );
+  }
+  return blob;
+}
+
 async function exportPayrollReport() {
   const button = view.querySelector('[data-action="payroll-export"]');
   if (button) button.disabled = true;
@@ -7468,7 +7573,7 @@ async function exportPayrollReport() {
       }
       throw new Error(payload.error || `Payroll export failed (${response.status}).`);
     }
-    const blob = await response.blob();
+    const blob = await readPayrollPdf(response);
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
@@ -7479,6 +7584,38 @@ async function exportPayrollReport() {
     showToast(error.message || "Could not export the payroll report.", "error");
   } finally {
     if (button?.isConnected) button.disabled = false;
+  }
+}
+
+async function downloadGeneratedPayrollPdf(button) {
+  const reportId = button.dataset.id;
+  button.disabled = true;
+  try {
+    const response = await fetch(
+      `/api/payroll/generated/${encodeURIComponent(reportId)}/pdf`,
+      { cache: "no-store" },
+    );
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        returnToSignIn(payload.error?.toLowerCase().includes("inactivity"));
+      }
+      throw new Error(payload.error || `Payroll PDF download failed (${response.status}).`);
+    }
+    const report = state.generatedPayroll.reports.find(
+      (item) => String(item.id) === String(reportId),
+    );
+    const blob = await readPayrollPdf(response);
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `payroll-${report?.start_date || "report"}-to-${report?.end_date || reportId}.pdf`;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  } catch (error) {
+    showToast(error.message || "Could not download the saved payroll PDF.", "error");
+  } finally {
+    if (button.isConnected) button.disabled = false;
   }
 }
 
@@ -8441,6 +8578,24 @@ view.addEventListener("click", async (event) => {
     payrollWorkflowAction(button.dataset.action);
   }
   if (button.dataset.action === "payroll-export") exportPayrollReport();
+  if (button.dataset.action === "generated-payroll-retry") {
+    state.generatedPayroll.loaded = false;
+    state.generatedPayroll.error = "";
+    render();
+  }
+  if (button.dataset.action === "generated-payroll-page") {
+    const page = Number(button.dataset.page);
+    if (Number.isInteger(page) && page >= 1 && page <= Math.ceil(
+      state.generatedPayroll.total / state.generatedPayroll.pageSize,
+    )) {
+      state.generatedPayroll.page = page;
+      state.generatedPayroll.loaded = false;
+      render();
+    }
+  }
+  if (button.dataset.action === "generated-payroll-pdf") {
+    downloadGeneratedPayrollPdf(button);
+  }
   if (button.dataset.action === "trip-export") exportTripHistory();
   if (button.dataset.action === "fuel-export") exportFuelLogs();
   if (button.dataset.action === "trip-group") {

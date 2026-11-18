@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import app as web_app
+import payroll_pdf_report
 from PIL import Image
 from fleet_management import FleetManagementError, FleetManager, _supabase_project_url
 from manifest_ocr import canonical_warehouse_code, extract_manifest_fields, truck_route_rate
@@ -1324,6 +1326,26 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
 
 
 class PayrollCalculationTests(unittest.TestCase):
+    def build_payroll_pdf_paragraph_texts(self, report, trips, drivers):
+        paragraph_texts = []
+        original_paragraph = payroll_pdf_report.Paragraph
+
+        def capture_paragraph(text, *args, **kwargs):
+            if isinstance(text, str):
+                paragraph_texts.append(text)
+            return original_paragraph(text, *args, **kwargs)
+
+        with patch.object(payroll_pdf_report, "Paragraph", side_effect=capture_paragraph):
+            pdf = web_app.build_payroll_pdf_report(
+                report,
+                trips,
+                drivers,
+                "2026-10-01",
+                "2026-10-31",
+                {"driver_id": "", "ism_no": "", "origin": "", "destination": ""},
+            )
+        self.assertTrue(pdf.getvalue().startswith(b"%PDF-"))
+        return paragraph_texts
     def test_manifest_fields_are_extracted_from_reference_layout(self):
         text = """
         Shipment No. : GLL-4471
@@ -1686,8 +1708,8 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('tailwind.generated.css?v=driver-route-summary-1', index_html)
-        self.assertIn('app.js?v=driver-route-summary-1', index_html)
+        self.assertIn('tailwind.generated.css?v=driver-route-summary-2', index_html)
+        self.assertIn('app.js?v=driver-route-summary-2', index_html)
         self.assertIn("dispatch-historical-records", app_js)
         self.assertIn("Scroll horizontally to review all trip fields.", app_js)
         self.assertIn("function dispatchCompletedMovementListItem(movement)", app_js)
@@ -2331,6 +2353,7 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertIn("payroll-2026-10-01-to-2026-10-15.pdf", response.headers["Content-Disposition"])
         self.assertTrue(response.data.startswith(b"%PDF-"))
         self.assertTrue(response.data.rstrip().endswith(b"%%EOF"))
+        self.assertRegex(response.data, rb"/MediaBox\s+\[\s*0\s+0\s+612\s+792\s*\]")
 
         report, trips, drivers, start_date, end_date, filters = build_report.call_args.args
         self.assertEqual((start_date, end_date), ("2026-10-01", "2026-10-15"))
@@ -2378,6 +2401,262 @@ class PayrollCalculationTests(unittest.TestCase):
         )
         self.assertEqual(len(report["drivers"]), 2)
         self.assertEqual(len(trips), 2)
+
+    def test_generate_payroll_saves_snapshot_for_archive_and_pdf_download(self):
+        manager = FleetManager(client=FakeSupabaseClient())
+        vehicle = manager.add_vehicle("PAY-ARCHIVE-1", "Toyota", "Hiace", 2022)
+        driver = manager.add_driver("Archived Payroll Driver", "PAY-ARCHIVE-DL-1")
+        manager.add_trip(
+            vehicle["id"], driver["id"], "DAV1 to DAV2", 0, 0,
+            ism_no="ISM-ARCHIVED", shipment_date="2026-10-05",
+            origin="DAV1", destination="DAV2",
+        )
+        with patch.object(web_app, "manager", manager), patch.dict(
+            web_app.app.config, {"TESTING": True, "TEST_AUTH_BYPASS": True}
+        ):
+            client = web_app.app.test_client()
+            csrf_token = client.get("/api/auth/csrf").json["csrf_token"]
+            response = client.post(
+                "/api/payroll/generated",
+                json={
+                    "start_date": "2026-10-01",
+                    "end_date": "2026-10-15",
+                    "filters": {"origin": "DAV1"},
+                },
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            archive = client.get("/api/payroll/generated")
+            pdf_response = client.get(
+                f"/api/payroll/generated/{response.json['generated']['id']}/pdf"
+            )
+
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.json["generated"]["start_date"], "2026-10-01")
+        self.assertEqual(response.json["generated"]["filters"]["origin"], "DAV1")
+        saved = manager.client.tables["generated_payroll_reports"][0]
+        self.assertEqual(saved["trip_snapshot"][0]["ism_no"], "ISM-ARCHIVED")
+        self.assertEqual(saved["driver_snapshot"][0]["driver_name"], "Archived Payroll Driver")
+        self.assertEqual(archive.status_code, 200)
+        self.assertEqual(len(archive.json["reports"]), 1)
+        self.assertEqual(pdf_response.status_code, 200)
+        self.assertEqual(pdf_response.mimetype, "application/pdf")
+        self.assertRegex(
+            pdf_response.data,
+            rb"/MediaBox\s+\[\s*0\s+0\s+612\s+792\s*\]",
+        )
+        self.assertTrue(pdf_response.data.startswith(b"%PDF-"))
+
+    def test_generated_payroll_storage_migration_is_admin_only(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__),
+            "..",
+            "supabase_generated_payroll_migration.sql",
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read().lower()
+        self.assertIn(
+            "create table if not exists public.generated_payroll_reports",
+            migration,
+        )
+        self.assertIn(
+            "alter table public.generated_payroll_reports enable row level security",
+            migration,
+        )
+        self.assertIn(
+            "revoke all on public.generated_payroll_reports from anon, authenticated",
+            migration,
+        )
+
+    def test_generated_payroll_archive_paginates_saved_reports(self):
+        manager = FleetManager(client=FakeSupabaseClient())
+        for day in range(1, 31):
+            manager.client.table("generated_payroll_reports").insert({
+                "start_date": "2026-10-01",
+                "end_date": "2026-10-15",
+                "status": "draft",
+                "filters": {},
+                "driver_count": 1,
+                "eligible_trip_count": 1,
+                "gross_pay": "200.00",
+                "net_payable": "200.00",
+                "created_at": f"2026-11-{day:02d}T00:00:00+00:00",
+            }).execute()
+        with patch.object(web_app, "manager", manager), patch.dict(
+            web_app.app.config, {"TESTING": True, "TEST_AUTH_BYPASS": True}
+        ):
+            response = web_app.app.test_client().get("/api/payroll/generated?page=2")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["page"], 2)
+        self.assertEqual(response.json["page_size"], 25)
+        self.assertEqual(response.json["total"], 30)
+        self.assertEqual(len(response.json["reports"]), 5)
+
+    def test_payroll_pdf_omits_empty_adjustments_and_review_trips_from_payslip(self):
+        trips = [
+            {
+                "driver_id": 1,
+                "driver_key": "id:1",
+                "driver_name": "Review Driver",
+                "payroll_date": "2026-10-01",
+                "ism_no": "ISM-PAYABLE-01",
+                "origin": "DAV1",
+                "destination": "DAV2",
+                "rate": "200.00",
+                "eligible": True,
+            },
+            {
+                "driver_id": 1,
+                "driver_key": "id:1",
+                "driver_name": "Review Driver",
+                "payroll_date": "2026-09-30",
+                "ism_no": "ISM-REFERENCE-ONLY",
+                "origin": "DAV1",
+                "destination": "PLAS",
+                "rate": None,
+                "eligible": False,
+                "issue": "REFERENCE ONLY – NOT PAYABLE",
+                "reference_only": True,
+            },
+            {
+                "driver_id": 1,
+                "driver_key": "id:1",
+                "driver_name": "Review Driver",
+                "payroll_date": "2026-10-02",
+                "ism_no": "ISM-REVIEW-ONLY",
+                "origin": "DAV1",
+                "destination": None,
+                "rate": None,
+                "eligible": False,
+                "issue": "Missing origin or destination",
+            },
+        ]
+        drivers = [{
+            "driver_id": 1,
+            "driver_key": "id:1",
+            "driver_name": "Review Driver",
+            "gross_pay": "200.00",
+            "cash_advances": "0.00",
+            "net_before_overdraft": "200.00",
+            "final_net_pay": "200.00",
+            "overdraft_transactions": [],
+        }]
+        report = {
+            "status": "draft",
+            "trips": trips,
+            "drivers": drivers,
+            "issues": [trips[2]],
+            "cash_advances": [],
+            "audit_history": [],
+        }
+
+        paragraph_texts = self.build_payroll_pdf_paragraph_texts(
+            report, trips, drivers
+        )
+
+        self.assertIn("Trips requiring review", paragraph_texts)
+        self.assertEqual(paragraph_texts.count("ISM-REVIEW-ONLY"), 2)
+        self.assertEqual(paragraph_texts.count("ISM-PAYABLE-01"), 2)
+        self.assertEqual(paragraph_texts.count("ISM-REFERENCE-ONLY"), 2)
+        self.assertNotIn("Cash advance details", paragraph_texts)
+        self.assertNotIn("Overdraft transaction history", paragraph_texts)
+        self.assertNotIn("Opening overdraft", paragraph_texts)
+        self.assertNotIn("Net before overdraft", paragraph_texts)
+
+    def test_payroll_pdf_includes_nonzero_advance_and_overdraft_details(self):
+        driver = {
+            "driver_id": 1,
+            "driver_key": "id:1",
+            "driver_name": "Adjustment Driver",
+            "gross_pay": "1000.00",
+            "cash_advances": "200.00",
+            "opening_overdraft": "500.00",
+            "new_overdraft": "0.00",
+            "overdraft_deduction": "100.00",
+            "remaining_overdraft": "400.00",
+            "net_before_overdraft": "800.00",
+            "final_net_pay": "700.00",
+            "overdraft_transactions": [{
+                "effective_date": "2026-10-01",
+                "transaction_type": "deduction",
+                "amount": "100.00",
+                "remarks": "Payroll deduction",
+            }],
+        }
+        trips = []
+        report = {
+            "status": "draft",
+            "trips": trips,
+            "drivers": [driver],
+            "issues": [],
+            "cash_advances": [{
+                "driver_id": 1,
+                "advance_date": "2026-10-01",
+                "amount": "200.00",
+                "reference": "ADV-001",
+                "remarks": "Cash advance",
+            }],
+            "audit_history": [],
+        }
+
+        paragraph_texts = self.build_payroll_pdf_paragraph_texts(
+            report, trips, [driver]
+        )
+
+        self.assertIn("Cash advance details", paragraph_texts)
+        self.assertIn("Overdraft transaction history", paragraph_texts)
+        self.assertIn("Cash advances", paragraph_texts)
+        self.assertIn("Opening overdraft", paragraph_texts)
+        self.assertIn("Overdraft deduction", paragraph_texts)
+        self.assertIn("Outstanding overdraft", paragraph_texts)
+
+    def test_payroll_pdf_paginates_long_trip_lists_in_portrait(self):
+        trips = [{
+            "driver_id": 1,
+            "driver_key": "id:1",
+            "driver_name": "Long Report Driver",
+            "payroll_date": f"2026-10-{day:02d}",
+            "ism_no": f"ISM-{day:03d}",
+            "origin": "DAV1",
+            "destination": "DAV2",
+            "rate": "200.00",
+            "truck_route_rate": "12000.00",
+            "eligible": True,
+        } for day in range(1, 41)]
+        drivers = [{
+            "driver_id": 1,
+            "driver_key": "id:1",
+            "driver_name": "Long Report Driver",
+            "gross_pay": "8000.00",
+            "cash_advances": "250.00",
+            "net_before_overdraft": "7750.00",
+            "final_net_pay": "7750.00",
+            "overdraft_transactions": [],
+        }]
+        report = {
+            "status": "reviewed",
+            "trips": trips,
+            "drivers": drivers,
+            "issues": [],
+            "cash_advances": [],
+            "audit_history": [],
+        }
+
+        pdf = web_app.build_payroll_pdf_report(
+            report,
+            trips,
+            drivers,
+            "2026-10-01",
+            "2026-10-31",
+            {"driver_id": "", "ism_no": "", "origin": "", "destination": ""},
+        ).getvalue()
+
+        self.assertRegex(
+            pdf,
+            rb"/MediaBox\s+\[\s*0\s+0\s+612\s+792\s*\]",
+        )
+        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page\b", pdf)), 3)
+        self.assertTrue(pdf.rstrip().endswith(b"%%EOF"))
 
 
 class FakeAuthApiError(Exception):
@@ -5008,10 +5287,21 @@ class FleetManagerTests(unittest.TestCase):
         self.assertEqual(client.get("/static/index.html").status_code, 302)
         login_page = client.get("/login")
         self.assertEqual(login_page.status_code, 200)
+        self.assertIn(b'id="login-loading-screen"', login_page.data)
+        self.assertIn(b"Logging in, please wait", login_page.data)
         login_page.close()
         login_script = client.get("/static/login.js")
         self.assertEqual(login_script.status_code, 200)
+        self.assertIn(b'loadingScreen.hidden = false', login_script.data)
+        self.assertIn(b'loadingScreen.hidden = true', login_script.data)
         login_script.close()
+        self.sign_in(client)
+        index_page = client.get("/static/index.html")
+        self.assertEqual(index_page.status_code, 200)
+        self.assertIn(b'id="app-loading-screen"', index_page.data)
+        self.assertIn(b"tailwind.generated.css?v=driver-route-summary-2", index_page.data)
+        self.assertIn(b"app.js?v=driver-route-summary-2", index_page.data)
+        index_page.close()
 
     def test_login_rejects_bad_credentials_and_requires_csrf(self):
         web_app.app.config["TESTING"] = True

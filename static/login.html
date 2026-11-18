@@ -11,9 +11,17 @@
     <link rel="icon" type="image/png" href="/static/glfs-logo.png" />
     <script src="/static/theme.js"></script>
     <link rel="stylesheet" href="/static/tailwind.generated.css?v=tailwind-3" />
-    <script src="/static/login.js?v=auth-session-1" defer></script>
+    <script src="/static/login.js?v=auth-session-2" defer></script>
   </head>
   <body>
+    <div class="loading-screen" id="login-loading-screen" role="status" aria-live="polite" hidden>
+      <div class="loading-screen-content">
+        <img class="loading-screen-logo" src="/static/glfs-logo.png" alt="" />
+        <span class="loading-screen-spinner" aria-hidden="true"></span>
+        <strong>Logging in, please wait</strong>
+        <span class="loading-screen-message">Preparing your fleet workspace…</span>
+      </div>
+    </div>
     <main class="login-layout grid min-h-screen place-content-center justify-items-center bg-fleet-canvas px-5 pt-8 pb-[18px]">
       <section class="login-card relative w-full max-w-[440px] rounded-[var(--radius-dialog)] border border-[var(--login-border)] bg-[var(--login-surface)] p-[38px_34px_34px] shadow-[var(--login-shadow)] max-[480px]:p-[27px_22px]" aria-labelledby="login-title">
         <a class="login-brand" href="/login" aria-label="Good Luck Forwarding Systems">

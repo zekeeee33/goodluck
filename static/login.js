@@ -4,6 +4,7 @@ const form = document.querySelector("#login-form");
 const submit = document.querySelector("#login-submit");
 const errorMessage = document.querySelector("#login-error");
 const inactivityNotice = document.querySelector("#inactivity-notice");
+const loadingScreen = document.querySelector("#login-loading-screen");
 
 if (new URLSearchParams(window.location.search).get("expired") === "1") {
   inactivityNotice.hidden = false;
@@ -15,6 +16,7 @@ form.addEventListener("submit", async (event) => {
 
   submit.disabled = true;
   errorMessage.hidden = true;
+  loadingScreen.hidden = false;
   try {
     const csrfResponse = await fetch("/api/auth/csrf");
     const csrfPayload = await csrfResponse.json();
@@ -42,6 +44,7 @@ form.addEventListener("submit", async (event) => {
     }
     window.location.replace(payload.redirect || "/");
   } catch (error) {
+    loadingScreen.hidden = true;
     errorMessage.textContent = error.message || "Unable to sign in. Please try again.";
     errorMessage.hidden = false;
     submit.disabled = false;

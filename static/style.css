@@ -1204,6 +1204,42 @@ tbody tr:hover { background: var(--table-hover); }
 .toast { max-width: min(420px, calc(100vw - 35px)); padding: 13px 17px; border: 1px solid; border-radius: var(--radius-inset); background: var(--surface-raised); color: var(--ink); box-shadow: var(--shadow-hover); font-size: 12px; animation: toast-in .24s var(--ease-ui) both; }
 .toast-success { border-color: #bce6cf; color: #16734e; }
 .toast-error { border-color: #f0c5c9; color: #a93745; }
+.loading-screen {
+  position: fixed;
+  z-index: 1000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: var(--canvas);
+  color: var(--ink);
+}
+.loading-screen[hidden] { display: none; }
+.loading-screen-content {
+  display: grid;
+  justify-items: center;
+  gap: 14px;
+  text-align: center;
+}
+.loading-screen-logo {
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  object-fit: contain;
+  animation: loading-logo-pulse 1.8s ease-in-out infinite;
+}
+.loading-screen-spinner {
+  width: 38px;
+  height: 38px;
+  border: 3px solid var(--border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: loading-spinner-rotate .8s linear infinite;
+}
+.loading-screen-content strong { font-size: 16px; }
+.loading-screen-message { color: var(--muted); font-size: 13px; }
+@keyframes loading-spinner-rotate { to { transform: rotate(360deg); } }
+@keyframes loading-logo-pulse { 50% { transform: scale(.94); opacity: .78; } }
 .loading-card, .error-card { padding: 25px; border: 1px solid var(--border); border-radius: var(--radius-panel); background: var(--surface); color: var(--muted); }
 .error-card h1 { margin-bottom: 12px; }
 .error-card > p:not(.eyebrow) { color: var(--text-secondary); line-height: 1.6; }
