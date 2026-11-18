@@ -3361,6 +3361,187 @@ def payroll_report() -> Any:
         return _json_error(str(exc), 400)
 
 
+def _payroll_export_data(
+    report: dict[str, Any],
+    filters: dict[str, str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, str]]:
+    search = filters["ism_no"].casefold()
+    trips = [
+        trip for trip in report.get("trips", [])
+        if (not filters["driver_id"] or str(trip.get("driver_id")) == filters["driver_id"])
+        and (not search or search in str(trip.get("ism_no") or "").casefold())
+        and (not filters["origin"] or trip.get("origin") == filters["origin"])
+        and (not filters["destination"] or trip.get("destination") == filters["destination"])
+    ]
+    drivers = [
+        driver for driver in report.get("drivers", [])
+        if not filters["driver_id"] or str(driver.get("driver_id")) == filters["driver_id"]
+    ]
+    visible_filters = dict(filters)
+    selected_driver = next(
+        (driver.get("driver_name") for driver in drivers
+         if str(driver.get("driver_id")) == filters["driver_id"]),
+        None,
+    )
+    if selected_driver:
+        visible_filters["driver_id"] = str(selected_driver)
+    return trips, drivers, visible_filters
+
+
+def _payroll_json_snapshot(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (date, datetime, datetime_time)):
+        return value.isoformat()
+    raise TypeError(f"Unsupported payroll snapshot value: {type(value).__name__}")
+
+
+def _generated_payroll_storage_error(error: Exception, action: str) -> tuple[Any, int]:
+    logger.exception("Could not %s generated payroll report.", action)
+    message = str(error).casefold()
+    if "generated_payroll_reports" in message and any(
+        marker in message
+        for marker in ("does not exist", "schema cache", "could not find")
+    ):
+        return _json_error(
+            "Generated Payroll storage is not installed. Run "
+            "Sql snippets/supabase_generated_payroll_migration.sql in the Supabase SQL Editor, "
+            "then retry.",
+            503,
+        )
+    return _json_error(
+        f"Could not {action} generated payroll. Check the Supabase connection and retry.",
+        503,
+    )
+
+
+@app.route("/api/payroll/generated", methods=["GET", "POST"])
+def generated_payroll_reports() -> Any:
+    if request.method == "GET":
+        try:
+            page = int(request.args.get("page", "1"))
+        except ValueError:
+            return _json_error("Generated payroll page must be a positive integer.", 400)
+        if page < 1:
+            return _json_error("Generated payroll page must be a positive integer.", 400)
+        page_size = 25
+        try:
+            response = get_manager().client.table("generated_payroll_reports").select(
+                "id,start_date,end_date,status,filters,driver_count,"
+                "eligible_trip_count,gross_pay,net_payable,created_at",
+                count="exact",
+            ).order("created_at", desc=True).range(
+                (page - 1) * page_size,
+                page * page_size - 1,
+            ).execute()
+            reports = response.data or []
+            total = getattr(response, "count", None)
+            return jsonify({
+                "reports": reports,
+                "page": page,
+                "page_size": page_size,
+                "total": total if total is not None else (page - 1) * page_size + len(reports),
+            })
+        except Exception as exc:
+            return _generated_payroll_storage_error(exc, "load")
+
+    try:
+        payload = _body()
+        start_date, end_date = _payroll_period_from_request(payload)
+        filter_input = payload.get("filters") or {}
+        if not isinstance(filter_input, dict):
+            raise ValueError("Payroll filters must be an object.")
+        filters = {
+            key: str(filter_input.get(key, "")).strip()
+            for key in ("driver_id", "ism_no", "origin", "destination")
+        }
+        report = get_manager().payroll_report(start_date, end_date)
+    except ValueError as exc:
+        return _json_error(str(exc), 400)
+
+    trips, drivers, visible_filters = _payroll_export_data(report, filters)
+    eligible_trip_count = sum(bool(trip.get("eligible")) for trip in trips)
+    gross_pay = sum(
+        (Decimal(str(driver.get("gross_pay") or 0)) for driver in drivers),
+        Decimal("0.00"),
+    )
+    net_payable = sum(
+        (
+            Decimal(str(
+                driver.get("final_net_pay")
+                if driver.get("final_net_pay") is not None
+                else max(Decimal(str(driver.get("net_before_overdraft") or 0)), Decimal("0"))
+            ))
+            for driver in drivers
+        ),
+        Decimal("0.00"),
+    )
+    actor_id = str((g.current_user or {}).get("id") or "")
+    try:
+        actor_id = str(uuid.UUID(actor_id)) if actor_id else None
+    except ValueError:
+        actor_id = None
+    snapshot = {
+        "start_date": start_date,
+        "end_date": end_date,
+        "status": report.get("status", "draft"),
+        "filters": visible_filters,
+        "report_snapshot": report,
+        "trip_snapshot": trips,
+        "driver_snapshot": drivers,
+        "driver_count": len(drivers),
+        "eligible_trip_count": eligible_trip_count,
+        "gross_pay": str(gross_pay),
+        "net_payable": str(net_payable),
+        "generated_by": actor_id,
+    }
+    try:
+        snapshot = json.loads(json.dumps(snapshot, default=_payroll_json_snapshot))
+        response = get_manager().client.table("generated_payroll_reports").insert(
+            snapshot
+        ).execute()
+        rows = response.data or []
+        if not rows or not rows[0].get("id"):
+            raise FleetManagementError(
+                "Supabase did not return the saved generated payroll report."
+            )
+    except Exception as exc:
+        return _generated_payroll_storage_error(exc, "save")
+    return jsonify({"generated": rows[0], "report": report}), 201
+
+
+@app.route("/api/payroll/generated/<int:report_id>/pdf")
+def generated_payroll_pdf(report_id: int) -> Any:
+    try:
+        response = get_manager().client.table("generated_payroll_reports").select(
+            "id,start_date,end_date,status,filters,report_snapshot,"
+            "trip_snapshot,driver_snapshot"
+        ).eq("id", report_id).limit(1).execute()
+        rows = response.data or []
+    except Exception as exc:
+        return _generated_payroll_storage_error(exc, "load")
+    if not rows:
+        return _json_error("Generated payroll report was not found.", 404)
+    saved = rows[0]
+    return send_file(
+        build_payroll_pdf_report(
+            saved["report_snapshot"],
+            saved["trip_snapshot"],
+            saved["driver_snapshot"],
+            str(saved["start_date"]),
+            str(saved["end_date"]),
+            saved.get("filters") or {},
+            payroll_number=saved["id"],
+        ),
+        mimetype="application/pdf",
+        as_attachment=True,
+        download_name=(
+            f"payroll-{saved['start_date']}-to-{saved['end_date']}-"
+            f"report-{report_id}.pdf"
+        ),
+    )
+
+
 @app.route("/api/payroll/reopen", methods=["POST"])
 def payroll_reopen() -> Any:
     if _is_dispatcher():
@@ -3689,28 +3870,16 @@ def export_payroll_report() -> Any:
         "origin": request.args.get("origin", "").strip(),
         "destination": request.args.get("destination", "").strip(),
     }
-    search = filters["ism_no"].casefold()
-    trips = [
-        trip for trip in report.get("trips", [])
-        if (not filters["driver_id"] or str(trip.get("driver_id")) == filters["driver_id"])
-        and (not search or search in str(trip.get("ism_no") or "").casefold())
-        and (not filters["origin"] or trip.get("origin") == filters["origin"])
-        and (not filters["destination"] or trip.get("destination") == filters["destination"])
-    ]
-    drivers = [
-        driver for driver in report.get("drivers", [])
-        if not filters["driver_id"] or str(driver.get("driver_id")) == filters["driver_id"]
-    ]
-    selected_driver = next(
-        (driver.get("driver_name") for driver in drivers
-         if str(driver.get("driver_id")) == filters["driver_id"]),
-        None,
-    )
-    if selected_driver:
-        filters["driver_id"] = selected_driver
+    trips, drivers, filters = _payroll_export_data(report, filters)
     return send_file(
         build_payroll_pdf_report(
-            report, trips, drivers, start_date, end_date, filters
+            report,
+            trips,
+            drivers,
+            start_date,
+            end_date,
+            filters,
+            payroll_number=f"X{uuid.uuid4().hex.upper()}",
         ),
         mimetype="application/pdf",
         as_attachment=True,

@@ -966,6 +966,14 @@ button.dispatcher-summary-card:hover { transform: translateY(-1px); border-color
 .payroll-toolbar { grid-template-columns: repeat(2, minmax(140px, 1fr)) auto; }
 .payroll-filter-grid { grid-template-columns: repeat(4, minmax(130px, 1fr)); margin-top: 11px; }
 .payroll-entry-form { grid-template-columns: repeat(3, minmax(140px, 1fr)); }
+.cash-advance-panel .panel-heading { margin-bottom: 12px; }
+.cash-advance-form { grid-template-columns: minmax(180px, 1.3fr) repeat(2, minmax(140px, .8fr)) auto; gap: 12px; }
+.cash-advance-form .form-field { min-width: 0; }
+.cash-advance-submit { min-height: var(--control-height); white-space: nowrap; }
+.cash-advance-optional { grid-column: 1 / -1; border-top: 1px solid var(--table-line); padding-top: 10px; }
+.cash-advance-optional > summary { width: fit-content; color: var(--muted); cursor: pointer; font-size: 11px; font-weight: 600; }
+.cash-advance-optional > summary:hover { color: var(--ink); }
+.cash-advance-optional-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; }
 .payroll-toolbar .form-field, .payroll-filter-grid .form-field, .payroll-entry-form .form-field { min-width: 0; }
 .payroll-toolbar .button { width: max-content; }
 .payroll-page .payroll-toolbar .form-field input,
@@ -1318,6 +1326,8 @@ tbody tr:hover { background: var(--table-hover); }
   .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .resource-layout { grid-template-columns: minmax(230px, .75fr) minmax(0, 1.5fr); }
   .payroll-entry-form { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+  .cash-advance-form { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
+  .cash-advance-submit { width: 100%; }
   .payroll-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .revenue-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .revenue-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1442,6 +1452,8 @@ tbody tr:hover { background: var(--table-hover); }
   .payroll-stats .stat-icon { width: 30px; height: 30px; flex-basis: 30px; }
   .payroll-stats .stat-copy strong { font-size: 14px; }
   .payroll-entry-form, .payroll-filter-grid, .payroll-toolbar { grid-template-columns: 1fr; }
+  .cash-advance-form { grid-template-columns: 1fr; }
+  .cash-advance-optional-fields { grid-template-columns: 1fr; }
   .payroll-toolbar .button { width: 100%; }
 }
 

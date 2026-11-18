@@ -266,6 +266,8 @@ const state = {
     loading: false,
     loaded: false,
     error: "",
+    requestId: 0,
+    controller: null,
   },
   tires: {
     items: [],
@@ -6206,15 +6208,20 @@ function renderPayroll() {
       </div>
     </section>
     ${report?.issues?.length ? `<section class="panel payroll-issues"><div class="panel-heading"><div><p class="eyebrow">REQUIRES REVIEW</p><h2>${formatNumber(report.issues.length)} trips need attention</h2></div></div><p class="page-description">These trips are excluded from earnings. Resolve the origin, destination, route, or duplicate-payroll issue shown for each trip in the Trips data.</p>${tableMarkup(report.issues, tripColumns, null, { empty: "No review issues" })}</section>` : ""}
-    <section class="panel payroll-advances">
-      <div class="panel-heading"><div><p class="eyebrow">CASH ADVANCES</p><h2>Record an advance</h2></div></div>
-      ${isDraft ? `<form id="cash-advance-form" class="payroll-entry-form">
+    <section class="panel payroll-advances cash-advance-panel">
+      <div class="panel-heading"><div><p class="eyebrow">CASH ADVANCES</p><h2>Add cash advance</h2></div></div>
+      ${isDraft ? `<form id="cash-advance-form" class="payroll-entry-form cash-advance-form">
         <label class="form-field"><span>Driver</span><select name="driver_id" required><option value="">Select driver</option>${state.data.drivers.map((driver) => `<option value="${escapeHtml(driver.id)}">${escapeHtml(driver.name)}</option>`).join("")}</select></label>
         <label class="form-field"><span>Date</span><input name="advance_date" type="date" min="${escapeHtml(startDate)}" max="${escapeHtml(endDate)}" required /></label>
         <label class="form-field"><span>Amount (₱)</span><input name="amount" type="number" min="0.01" step="0.01" required /></label>
-        <label class="form-field"><span>Reference (optional)</span><input name="reference" type="text" maxlength="100" /></label>
-        <label class="form-field"><span>Remarks (optional)</span><input name="remarks" type="text" maxlength="500" /></label>
-        <button class="button button-primary" type="submit">Add Advance</button>
+        <button class="button button-primary cash-advance-submit" type="submit">Add advance</button>
+        <details class="cash-advance-optional">
+          <summary>Reference or note (optional)</summary>
+          <div class="cash-advance-optional-fields">
+            <label class="form-field"><span>Reference</span><input name="reference" type="text" maxlength="100" /></label>
+            <label class="form-field"><span>Remarks</span><input name="remarks" type="text" maxlength="500" /></label>
+          </div>
+        </details>
       </form>` : '<p class="page-description">Cash advances are locked after payroll review.</p>'}
     </section>
     <section class="panel payroll-advances">
@@ -6250,25 +6257,44 @@ function renderPayroll() {
     </section>`;
 }
 
+async function loadGeneratedPayroll() {
+  const generated = state.generatedPayroll;
+  generated.controller?.abort();
+  const requestId = ++generated.requestId;
+  const controller = new AbortController();
+  generated.controller = controller;
+  generated.loading = true;
+  generated.error = "";
+  const timeoutId = window.setTimeout(() => controller.abort(), 15000);
+  try {
+    const result = await api(
+      `/api/payroll/generated?page=${generated.page}`,
+      { signal: controller.signal },
+    );
+    if (generated.requestId !== requestId) return;
+    generated.reports = result.reports || [];
+    generated.total = Number(result.total || 0);
+    generated.pageSize = Number(result.page_size || generated.pageSize);
+    generated.loaded = true;
+  } catch (error) {
+    if (generated.requestId !== requestId) return;
+    generated.error = error.name === "AbortError"
+      ? "Loading saved payroll reports timed out. Check your connection and try again."
+      : error.message || "Could not load generated payroll.";
+  } finally {
+    window.clearTimeout(timeoutId);
+    if (generated.requestId === requestId) {
+      generated.loading = false;
+      generated.controller = null;
+      if (state.page === "generated-payroll") render();
+    }
+  }
+}
+
 function renderGeneratedPayroll() {
   const generated = state.generatedPayroll;
-  if (!generated.loading && !generated.loaded) {
-    generated.loading = true;
-    generated.error = "";
-    api(`/api/payroll/generated?page=${generated.page}`)
-      .then((result) => {
-        generated.reports = result.reports || [];
-        generated.total = Number(result.total || 0);
-        generated.pageSize = Number(result.page_size || generated.pageSize);
-        generated.loaded = true;
-      })
-      .catch((error) => {
-        generated.error = error.message || "Could not load generated payroll.";
-      })
-      .finally(() => {
-        generated.loading = false;
-        if (state.page === "generated-payroll") render();
-      });
+  if (!generated.loading && !generated.loaded && !generated.error) {
+    loadGeneratedPayroll();
   }
   const reports = generated.reports;
   const pageCount = Math.max(1, Math.ceil(generated.total / generated.pageSize));
@@ -6307,7 +6333,7 @@ function renderGeneratedPayroll() {
           </section>`
         : '<section class="panel empty-state"><span>₱</span><strong>No generated payroll reports yet</strong><small>Generate a payroll report from Payroll. Saved reports will appear here.</small></section>';
   return `<div class="payroll-page">
-    ${header("FINANCE", "Generated Payroll", "Saved payroll snapshots for later review and printing.", '<button class="button button-secondary" type="button" data-action="generated-payroll-retry">Refresh</button>')}
+    ${header("FINANCE", "Generated Payroll", "Saved payroll snapshots for later review and printing.")}
     ${content}
   </div>`;
 }
@@ -8562,6 +8588,10 @@ view.addEventListener("click", async (event) => {
       invalidatePayrollReport();
       render();
       loadData({ force: true });
+    } else if (button.dataset.action === "refresh" && state.page === "generated-payroll") {
+      state.generatedPayroll.loaded = false;
+      loadGeneratedPayroll();
+      render();
     } else {
       loadData();
     }
@@ -8580,7 +8610,7 @@ view.addEventListener("click", async (event) => {
   if (button.dataset.action === "payroll-export") exportPayrollReport();
   if (button.dataset.action === "generated-payroll-retry") {
     state.generatedPayroll.loaded = false;
-    state.generatedPayroll.error = "";
+    loadGeneratedPayroll();
     render();
   }
   if (button.dataset.action === "generated-payroll-page") {

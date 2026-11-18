@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import uuid
+from datetime import date
 from decimal import Decimal
 from html import escape
 from io import BytesIO
@@ -7,7 +9,7 @@ from typing import Any
 
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-from reportlab.lib.pagesizes import landscape, letter
+from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.lib.utils import ImageReader
@@ -32,7 +34,7 @@ _BORDER = colors.HexColor("#CBD5E1")
 
 def _money(value: Any) -> str:
     amount = Decimal(str(value or 0))
-    return f"₱{amount:,.2f}"
+    return f"PHP {amount:,.2f}"
 
 
 def _text(value: Any, empty: str = "—") -> str:
@@ -46,12 +48,15 @@ def build_payroll_pdf_report(
     start_date: str,
     end_date: str,
     filters: dict[str, str],
+    *,
+    payroll_number: str | int | None = None,
 ) -> BytesIO:
+    payroll_number = str(payroll_number or f"X{uuid.uuid4().hex.upper()}")
     output = BytesIO()
-    page_width, page_height = landscape(letter)
+    page_width, page_height = letter
     document = SimpleDocTemplate(
         output,
-        pagesize=landscape(letter),
+        pagesize=letter,
         rightMargin=12 * mm,
         leftMargin=12 * mm,
         topMargin=29 * mm,
@@ -108,7 +113,31 @@ def build_payroll_pdf_report(
         parent=body_style,
         alignment=TA_RIGHT,
     )
+    small_right_style = ParagraphStyle(
+        "PayrollSmallRight",
+        parent=small_style,
+        alignment=TA_RIGHT,
+    )
     period = f"Pay period: {start_date} to {end_date} | Status: {str(report.get('status', 'draft')).title()}"
+    try:
+        start = date.fromisoformat(start_date)
+        end = date.fromisoformat(end_date)
+        if start.year == end.year and start.month == end.month:
+            short_period = (
+                f"{start.strftime('%b').upper()} {start.day}–{end.day}, {end.year}"
+            )
+        elif start.year == end.year:
+            short_period = (
+                f"{start.strftime('%b').upper()} {start.day}–"
+                f"{end.strftime('%b').upper()} {end.day}, {end.year}"
+            )
+        else:
+            short_period = (
+                f"{start.strftime('%b').upper()} {start.day}, {start.year}–"
+                f"{end.strftime('%b').upper()} {end.day}, {end.year}"
+            )
+    except ValueError:
+        short_period = f"{start_date} to {end_date}"
     active_filters = [
         f"{key.replace('_', ' ').title()}: {value}"
         for key, value in filters.items()
@@ -124,10 +153,15 @@ def build_payroll_pdf_report(
         rows: list[list[Any]],
         widths: list[float],
         empty_message: str,
+        repeated_heading: Paragraph | None = None,
     ) -> LongTable:
-        table_rows: list[list[Any]] = [
-            [Paragraph(escape(header), header_style) for header in headers]
-        ]
+        table_rows: list[list[Any]] = []
+        if repeated_heading:
+            table_rows.append([
+                repeated_heading,
+                *[Paragraph("", body_style) for _ in headers[1:]],
+            ])
+        table_rows.append([Paragraph(escape(header), header_style) for header in headers])
         if rows:
             table_rows.extend(rows)
         else:
@@ -135,21 +169,25 @@ def build_payroll_pdf_report(
                 Paragraph(escape(empty_message), small_style),
                 *[Paragraph("", body_style) for _ in headers[1:]],
             ])
+        header_rows = 2 if repeated_heading else 1
+        table_style = [
+            ("BACKGROUND", (0, 0), (-1, header_rows - 1), _BLUE),
+            ("ROWBACKGROUNDS", (0, header_rows), (-1, -1), [colors.white, _LIGHT]),
+            ("GRID", (0, 0), (-1, -1), 0.35, _BORDER),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 4),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+            ("TOPPADDING", (0, 0), (-1, -1), 4),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+        ]
+        if repeated_heading:
+            table_style.append(("SPAN", (0, 0), (-1, 0)))
         return LongTable(
             table_rows,
             colWidths=widths,
-            repeatRows=1,
+            repeatRows=header_rows,
             hAlign="LEFT",
-            style=TableStyle([
-                ("BACKGROUND", (0, 0), (-1, 0), _BLUE),
-                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, _LIGHT]),
-                ("GRID", (0, 0), (-1, -1), 0.35, _BORDER),
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                ("TOPPADDING", (0, 0), (-1, -1), 4),
-                ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
-            ]),
+            style=TableStyle(table_style),
         )
 
     def add_section(story: list[Any], title: str, table: LongTable) -> None:
@@ -185,31 +223,36 @@ def build_payroll_pdf_report(
         ),
         Decimal("0.00"),
     )
+    document_count = len(summary_drivers)
     statement_widths = [
         available_width * weight / 100
-        for weight in (20, 8, 12, 12, 12, 12, 12, 12)
+        for weight in (17, 18, 6, 11, 10, 9, 10, 10, 9)
     ]
-    statement_rows = [[
-        cell(driver.get("driver_name")),
-        cell(driver["visible_trip_count"], right_style),
-        cell(_money(driver.get("gross_pay")), right_style),
-        cell(_money(driver.get("cash_advances")), right_style),
-        cell(_money(driver.get("overdraft_deduction")), right_style),
-        cell(_money(
-            driver.get("remaining_overdraft")
-            if driver.get("remaining_overdraft") is not None
-            else driver.get("overdraft_balance")
-        ), right_style),
-        cell(_money(
-            driver.get("final_net_pay")
-            if driver.get("final_net_pay") is not None
-            else max(Decimal(str(driver.get("net_before_overdraft") or 0)), Decimal("0"))
-        ), right_style),
-        cell(_money(driver.get("remaining_amount_due")), right_style),
-    ] for driver in summary_drivers]
+    statement_rows = []
+    for index, driver in enumerate(summary_drivers, start=1):
+        document_number = f"PAY-{payroll_number}-DOC-{index:03d}"
+        statement_rows.append([
+            cell(driver.get("driver_name")),
+            cell(document_number, small_style),
+            cell(driver["visible_trip_count"], small_right_style),
+            cell(_money(driver.get("gross_pay")), small_right_style),
+            cell(_money(driver.get("cash_advances")), small_right_style),
+            cell(_money(driver.get("overdraft_deduction")), small_right_style),
+            cell(_money(
+                driver.get("remaining_overdraft")
+                if driver.get("remaining_overdraft") is not None
+                else driver.get("overdraft_balance")
+            ), small_right_style),
+            cell(_money(
+                driver.get("final_net_pay")
+                if driver.get("final_net_pay") is not None
+                else max(Decimal(str(driver.get("net_before_overdraft") or 0)), Decimal("0"))
+            ), small_right_style),
+            cell(_money(driver.get("remaining_amount_due")), small_right_style),
+        ])
 
     story: list[Any] = [
-        Paragraph("Payroll Report", title_style),
+        Paragraph(f"Payroll Report #{_text(payroll_number)}", title_style),
         Paragraph(escape(period), body_style),
         Paragraph(escape(filter_summary), small_style),
         Spacer(1, 4 * mm),
@@ -266,39 +309,13 @@ def build_payroll_pdf_report(
         "Driver payroll statements",
         make_table(
             [
-                "Driver", "Trips", "Gross", "Advances", "OD Deduction",
-                "Outstanding OD", "Final net pay", "Amount due",
+                "Driver", "Document No.", "Trips", "Gross", "Advances",
+                "OD Deduction", "Outstanding OD", "Final net pay", "Amount due",
             ],
             statement_rows,
             statement_widths,
             "No drivers match the selected payroll filters.",
         ),
-    )
-
-    trip_headers = [
-        "Date", "Driver", "ISM Number", "Origin", "Destination",
-        "Trip Allowance", "Truck Rate", "Review",
-    ]
-    trip_widths = [
-        available_width * weight / 100 for weight in (10, 15, 14, 12, 12, 12, 12, 13)
-    ]
-
-    def trip_rows(records: list[dict[str, Any]]) -> list[list[Any]]:
-        return [[
-            cell(trip.get("payroll_date")),
-            cell(trip.get("driver_name")),
-            cell(trip.get("ism_no")),
-            cell(trip.get("origin")),
-            cell(trip.get("destination")),
-            cell(_money(trip.get("rate")), right_style),
-            cell(_money(trip.get("truck_route_rate")), right_style),
-            cell(trip.get("issue") or ("Eligible" if trip.get("eligible") else "Needs review")),
-        ] for trip in records]
-
-    story.append(PageBreak())
-    add_section(
-        story, "Trip details",
-        make_table(trip_headers, trip_rows(trips), trip_widths, "No trips match the selected filters."),
     )
 
     related_driver_ids = {str(driver.get("driver_id")) for driver in summary_drivers}
@@ -311,7 +328,6 @@ def build_payroll_pdf_report(
         if str(advance.get("driver_id")) in related_driver_ids
     ]
     advances.sort(key=lambda advance: (str(advance.get("advance_date") or ""), str(advance.get("driver_id") or "")))
-    story.append(PageBreak())
     add_section(
         story,
         "Cash advances",
@@ -340,7 +356,6 @@ def build_payroll_pdf_report(
         for driver in summary_drivers
         for transaction in driver.get("overdraft_transactions", [])
     ]
-    story.append(PageBreak())
     add_section(
         story,
         "Overdraft ledger",
@@ -352,15 +367,30 @@ def build_payroll_pdf_report(
         ),
     )
 
-    issues = report.get("issues", [])
-    story.append(PageBreak())
+    review_trip_headers = [
+        "Date", "Driver", "ISM Number", "Origin", "Destination",
+        "Trip Allowance", "Truck Rate", "Review",
+    ]
+    review_trip_widths = [
+        available_width * weight / 100 for weight in (10, 15, 14, 12, 12, 12, 12, 13)
+    ]
+    review_trip_rows = [[
+        cell(trip.get("payroll_date")),
+        cell(trip.get("driver_name")),
+        cell(trip.get("ism_no")),
+        cell(trip.get("origin")),
+        cell(trip.get("destination")),
+        cell(_money(trip.get("rate")), right_style),
+        cell(_money(trip.get("truck_route_rate")), right_style),
+        cell(trip.get("issue") or "Needs review"),
+    ] for trip in report.get("issues", [])]
     add_section(
         story,
         "Trips requiring review",
         make_table(
-            trip_headers,
-            trip_rows(issues),
-            trip_widths,
+            review_trip_headers,
+            review_trip_rows,
+            review_trip_widths,
             "No trips require review.",
         ),
     )
@@ -371,7 +401,6 @@ def build_payroll_pdf_report(
         cell(entry.get("actor_id")),
         cell(str(entry.get("details") or {})),
     ] for entry in report.get("audit_history", [])]
-    story.append(PageBreak())
     add_section(
         story,
         "Payroll audit history",
@@ -383,13 +412,25 @@ def build_payroll_pdf_report(
         ),
     )
 
-    for driver_index, driver in enumerate(summary_drivers):
+    for document_index, driver in enumerate(summary_drivers, start=1):
         story.append(PageBreak())
         driver_name = str(driver.get("driver_name") or "Unassigned Driver")
+        document_number = f"PAY-{payroll_number}-DOC-{document_index:03d}"
+        transaction_id = f"TXN-{payroll_number}-{document_index:03d}"
         story.extend([
             Paragraph("Employee Payslip", title_style),
             Paragraph(f"<b>Employee:</b> {_text(driver_name)}", body_style),
             Paragraph(f"<b>Driver ID:</b> {_text(driver.get('driver_id'))}", body_style),
+            Paragraph(
+                f"<b>Payroll #{_text(payroll_number)}</b> · {escape(short_period)} · "
+                f"<b>Document {document_index} of {document_count}</b>",
+                body_style,
+            ),
+            Paragraph(
+                f"<b>Document Number:</b> {_text(document_number)} · "
+                f"<b>Transaction ID:</b> {_text(transaction_id)}",
+                body_style,
+            ),
             Paragraph(escape(period), body_style),
             Paragraph(escape(filter_summary), small_style),
             Spacer(1, 3 * mm),
@@ -398,137 +439,180 @@ def build_payroll_pdf_report(
         driver_trips = [
             trip for trip in trips
             if trip_key(trip) == driver_key
+            and (trip.get("eligible") or trip.get("reference_only"))
         ]
-        add_section(
-            story,
-            "Earnings breakdown",
-            make_table(
-                ["Date", "ISM Number", "Origin", "Destination", "Trip rate", "Status"],
-                [[
-                    cell(trip.get("payroll_date")),
-                    cell(trip.get("ism_no")),
-                    cell(trip.get("origin")),
-                    cell(trip.get("destination")),
-                    cell(_money(trip.get("rate")), right_style),
-                    cell(trip.get("issue") or ("Eligible" if trip.get("eligible") else "Needs review")),
-                ] for trip in driver_trips],
-                [available_width * weight / 100 for weight in (13, 17, 16, 16, 15, 23)],
-                "No trip line items match the selected filters.",
+        earnings_rows = [[
+            cell(trip.get("payroll_date")),
+            cell(trip.get("ism_no")),
+            cell(trip.get("origin")),
+            cell(trip.get("destination")),
+            cell(_money(trip.get("rate")), right_style),
+            cell(trip.get("issue") or ("Eligible" if trip.get("eligible") else "Needs review")),
+        ] for trip in driver_trips]
+        earnings_heading = Paragraph(
+            (
+                f"EMPLOYEE PAYSLIP · {_text(driver_name)} · "
+                f"{escape(start_date)} to {escape(end_date)} · "
+                f"{escape(str(report.get('status', 'draft')).title())}"
             ),
+            header_style,
         )
+        earnings_headers = [
+            "Date", "ISM Number", "Origin", "Destination", "Trip rate", "Status",
+        ]
+        earnings_widths = [
+            available_width * weight / 100 for weight in (13, 17, 16, 16, 15, 23)
+        ]
+        story.append(make_table(
+            earnings_headers,
+            earnings_rows,
+            earnings_widths,
+            "No trip line items match the selected filters.",
+            earnings_heading,
+        ))
 
         remaining_overdraft = (
             driver.get("remaining_overdraft")
             if driver.get("remaining_overdraft") is not None
             else driver.get("overdraft_balance")
         )
+        driver_advances = [
+            advance for advance in report.get("cash_advances", [])
+            if str(advance.get("driver_id")) == str(driver.get("driver_id"))
+        ]
         final_net = (
             driver.get("final_net_pay")
             if driver.get("final_net_pay") is not None
             else max(Decimal(str(driver.get("net_before_overdraft") or 0)), Decimal("0"))
         )
-        deduction_rows = [
-            ["Cash advances", _money(driver.get("cash_advances"))],
-            ["Opening overdraft", _money(driver.get("opening_overdraft"))],
-            ["New overdraft", _money(driver.get("new_overdraft"))],
-            ["Overdraft deduction", _money(driver.get("overdraft_deduction"))],
-            ["Outstanding overdraft", _money(remaining_overdraft)],
+        cash_advances = Decimal(str(driver.get("cash_advances") or 0))
+        overdraft_values = [
+            ("opening_overdraft", "Opening overdraft", driver.get("opening_overdraft")),
+            ("new_overdraft", "New overdraft", driver.get("new_overdraft")),
+            ("overdraft_deduction", "Overdraft deduction", driver.get("overdraft_deduction")),
+            ("remaining_overdraft", "Outstanding overdraft", remaining_overdraft),
         ]
+        deduction_rows = []
+        if cash_advances:
+            deduction_rows.append(["Cash advances", _money(cash_advances)])
+        deduction_rows.extend(
+            [label, _money(value)]
+            for _, label, value in overdraft_values
+            if Decimal(str(value or 0))
+        )
+        has_overdraft = bool(driver.get("overdraft_transactions")) or any(
+            Decimal(str(value or 0))
+            for key, _, value in overdraft_values
+            if key != "remaining_overdraft"
+        ) or Decimal(str(remaining_overdraft or 0)) != 0
+        summary_widths = (
+            [available_width * 0.23, available_width * 0.17]
+            if deduction_rows
+            else [available_width * 0.65, available_width * 0.35]
+        )
         net_rows = [
             ["Gross earnings", _money(driver.get("gross_pay"))],
-            ["Net before overdraft", _money(driver.get("net_before_overdraft"))],
+        ]
+        if has_overdraft:
+            net_rows.append(["Net before overdraft", _money(driver.get("net_before_overdraft"))])
+        net_rows.extend([
             ["Final net pay", _money(final_net)],
             ["Remaining amount due", _money(driver.get("remaining_amount_due"))],
-        ]
-        side_by_side = Table(
-            [[
-                Table(
-                    [[Paragraph("<b>DEDUCTIONS &amp; ADJUSTMENTS</b>", body_style)]]
-                    + [[cell(label), cell(value, right_style)] for label, value in deduction_rows],
-                    colWidths=[available_width * 0.23, available_width * 0.17],
-                    style=TableStyle([
-                        ("BACKGROUND", (0, 0), (-1, 0), _LIGHT),
-                        ("BOX", (0, 0), (-1, -1), 0.4, _BORDER),
-                        ("INNERGRID", (0, 0), (-1, -1), 0.3, _BORDER),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                    ]),
-                ),
-                Table(
-                    [[Paragraph("<b>NET PAY SUMMARY</b>", body_style)]]
-                    + [[cell(label), cell(value, right_style)] for label, value in net_rows],
-                    colWidths=[available_width * 0.23, available_width * 0.17],
-                    style=TableStyle([
-                        ("BACKGROUND", (0, 0), (-1, 0), _LIGHT),
-                        ("BOX", (0, 0), (-1, -1), 0.4, _BORDER),
-                        ("INNERGRID", (0, 0), (-1, -1), 0.3, _BORDER),
-                        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                        ("LEFTPADDING", (0, 0), (-1, -1), 5),
-                        ("RIGHTPADDING", (0, 0), (-1, -1), 5),
-                        ("TOPPADDING", (0, 0), (-1, -1), 5),
-                        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
-                    ]),
-                ),
-            ]],
-            colWidths=[available_width / 2, available_width / 2],
+        ])
+        net_summary = Table(
+            [[Paragraph("<b>NET PAY SUMMARY</b>", body_style)]]
+            + [[cell(label), cell(value, right_style)] for label, value in net_rows],
+            colWidths=summary_widths,
             style=TableStyle([
-                ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                ("LEFTPADDING", (0, 0), (-1, -1), 0),
-                ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ("BACKGROUND", (0, 0), (-1, 0), _LIGHT),
+                ("BOX", (0, 0), (-1, -1), 0.4, _BORDER),
+                ("INNERGRID", (0, 0), (-1, -1), 0.3, _BORDER),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                ("TOPPADDING", (0, 0), (-1, -1), 5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
             ]),
         )
+        if deduction_rows:
+            deductions_table = Table(
+                [[Paragraph("<b>DEDUCTIONS &amp; ADJUSTMENTS</b>", body_style)]]
+                + [[cell(label), cell(value, right_style)] for label, value in deduction_rows],
+                colWidths=[available_width * 0.23, available_width * 0.17],
+                style=TableStyle([
+                    ("BACKGROUND", (0, 0), (-1, 0), _LIGHT),
+                    ("BOX", (0, 0), (-1, -1), 0.4, _BORDER),
+                    ("INNERGRID", (0, 0), (-1, -1), 0.3, _BORDER),
+                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 5),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                ]),
+            )
+            financial_summary = Table(
+                [[deductions_table, net_summary]],
+                colWidths=[available_width / 2, available_width / 2],
+                style=TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+                ]),
+            )
+        else:
+            financial_summary = Table(
+                [[net_summary]],
+                colWidths=[available_width],
+                style=TableStyle([
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                ]),
+            )
         story.extend([
             Spacer(1, 3 * mm),
-            side_by_side,
+            financial_summary,
             Spacer(1, 3 * mm),
         ])
 
-        driver_advances = [
-            advance for advance in report.get("cash_advances", [])
-            if str(advance.get("driver_id")) == str(driver.get("driver_id"))
-        ]
-        add_section(
-            story,
-            "Cash advance details",
-            make_table(
-                ["Date", "Amount", "Reference", "Remarks"],
-                [[
-                    cell(advance.get("advance_date")),
-                    cell(_money(advance.get("amount")), right_style),
-                    cell(advance.get("reference")),
-                    cell(advance.get("remarks")),
-                ] for advance in driver_advances],
-                [available_width * weight / 100 for weight in (18, 18, 27, 37)],
-                "No cash advances recorded.",
-            ),
-        )
-        add_section(
-            story,
-            "Overdraft transaction history",
-            make_table(
-                ["Effective date", "Transaction", "Amount", "Remarks"],
-                [[
-                    cell(transaction.get("effective_date")),
-                    cell(transaction.get("transaction_type")),
-                    cell(_money(transaction.get("amount")), right_style),
-                    cell(transaction.get("remarks")),
-                ] for transaction in driver.get("overdraft_transactions", [])],
-                [available_width * weight / 100 for weight in (18, 22, 18, 42)],
-                "No overdraft transactions recorded.",
-            ),
-        )
+        if driver_advances:
+            add_section(
+                story,
+                "Cash advance details",
+                make_table(
+                    ["Date", "Amount", "Reference", "Remarks"],
+                    [[
+                        cell(advance.get("advance_date")),
+                        cell(_money(advance.get("amount")), right_style),
+                        cell(advance.get("reference")),
+                        cell(advance.get("remarks")),
+                    ] for advance in driver_advances],
+                    [available_width * weight / 100 for weight in (18, 18, 27, 37)],
+                    "No cash advances recorded.",
+                ),
+            )
+        if driver.get("overdraft_transactions"):
+            add_section(
+                story,
+                "Overdraft transaction history",
+                make_table(
+                    ["Effective date", "Transaction", "Amount", "Remarks"],
+                    [[
+                        cell(transaction.get("effective_date")),
+                        cell(transaction.get("transaction_type")),
+                        cell(_money(transaction.get("amount")), right_style),
+                        cell(transaction.get("remarks")),
+                    ] for transaction in driver.get("overdraft_transactions", [])],
+                    [available_width * weight / 100 for weight in (18, 22, 18, 42)],
+                    "No overdraft transactions recorded.",
+                ),
+            )
         story.append(Spacer(1, 4 * mm))
         story.append(Paragraph(
             "Employee acknowledgement: ____________________________________"
             " &nbsp;&nbsp;&nbsp; Date: ____________________",
             small_style,
         ))
-        if driver_index < len(summary_drivers) - 1:
-            story.append(PageBreak())
-
     def draw_page(canvas: Any, doc: Any) -> None:
         canvas.saveState()
         logo_width, logo_height = ImageReader(report_logo_path()).getSize()

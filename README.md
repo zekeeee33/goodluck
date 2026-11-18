@@ -429,10 +429,17 @@ values if trips or route rules later change. Cash advances must be recorded befo
 review; overdrafts are recorded as explicit opening/new ledger entries and are
 never inferred from negative pay. Overdraft settlement is separately confirmed
 at finalization. Claims are shown as Coming Soon and do not affect pay.
-Payroll reports can be exported as a formatted, print-ready PDF containing the
-filtered payroll summary, detail ledgers, and driver payslips. Restart the Flask
-server or redeploy the application after updating the backend so the payroll
-export endpoint is registered.
+After applying `supabase_payroll_migration.sql`, run
+[`supabase_generated_payroll_migration.sql`](./Sql%20snippets/supabase_generated_payroll_migration.sql)
+to enable the administrator-only Generated Payroll archive. Each successful
+Generate Report action saves an immutable snapshot, including its selected
+filters, for later review and PDF download. Payroll PDFs use portrait letter
+pages, summarize pay first, then provide one continuous, repeating-header trip
+table per driver on a separate page.
+Each driver's summary row and payslip includes a globally unique document number
+and transaction ID qualified by the payroll report number, plus that driver's
+document position within the report. Archived PDFs reuse the saved report number
+so their identifiers remain unchanged when downloaded again.
 
 ## Data retrieval performance
 

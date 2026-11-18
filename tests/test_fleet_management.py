@@ -1326,7 +1326,15 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
 
 
 class PayrollCalculationTests(unittest.TestCase):
-    def build_payroll_pdf_paragraph_texts(self, report, trips, drivers):
+    def build_payroll_pdf_paragraph_texts(
+        self,
+        report,
+        trips,
+        drivers,
+        payroll_number=1,
+        start_date="2026-10-01",
+        end_date="2026-10-31",
+    ):
         paragraph_texts = []
         original_paragraph = payroll_pdf_report.Paragraph
 
@@ -1340,12 +1348,31 @@ class PayrollCalculationTests(unittest.TestCase):
                 report,
                 trips,
                 drivers,
-                "2026-10-01",
-                "2026-10-31",
+                start_date,
+                end_date,
                 {"driver_id": "", "ism_no": "", "origin": "", "destination": ""},
+                payroll_number=payroll_number,
             )
         self.assertTrue(pdf.getvalue().startswith(b"%PDF-"))
         return paragraph_texts
+
+    def test_cash_advance_form_keeps_required_fields_and_collapses_optional_details(self):
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+        form = app_js.split('id="cash-advance-form"', 1)[1].split("</form>", 1)[0]
+
+        self.assertIn('name="driver_id" required', form)
+        self.assertIn('name="advance_date" type="date"', form)
+        self.assertIn('name="amount" type="number"', form)
+        self.assertEqual(form.count("required"), 3)
+        self.assertIn('<details class="cash-advance-optional">', form)
+        self.assertIn('name="reference"', form)
+        self.assertIn('name="remarks"', form)
+        self.assertIn("Reference or note (optional)", form)
+        self.assertIn('type="submit">Add advance</button>', form)
     def test_manifest_fields_are_extracted_from_reference_layout(self):
         text = """
         Shipment No. : GLL-4471
@@ -1708,8 +1735,8 @@ class PayrollCalculationTests(unittest.TestCase):
             app_js,
         )
         self.assertIn('if (page === "trips") return renderDispatchWorkflow();', app_js)
-        self.assertIn('tailwind.generated.css?v=driver-route-summary-2', index_html)
-        self.assertIn('app.js?v=driver-route-summary-2', index_html)
+        self.assertIn('tailwind.generated.css?v=driver-route-summary-3', index_html)
+        self.assertIn('app.js?v=driver-route-summary-6', index_html)
         self.assertIn("dispatch-historical-records", app_js)
         self.assertIn("Scroll horizontally to review all trip fields.", app_js)
         self.assertIn("function dispatchCompletedMovementListItem(movement)", app_js)
@@ -2401,6 +2428,86 @@ class PayrollCalculationTests(unittest.TestCase):
         )
         self.assertEqual(len(report["drivers"]), 2)
         self.assertEqual(len(trips), 2)
+        payroll_number = build_report.call_args.kwargs["payroll_number"]
+        self.assertRegex(payroll_number, r"^X[0-9A-F]{32}$")
+
+    def test_payroll_pdf_assigns_unique_document_and_transaction_ids_per_driver(self):
+        drivers = [
+            {"driver_id": index, "driver_key": f"id:{index}", "driver_name": f"Driver {index}"}
+            for index in range(1, 4)
+        ]
+        paragraph_texts = self.build_payroll_pdf_paragraph_texts(
+            {"status": "draft", "drivers": drivers},
+            [],
+            drivers,
+            start_date="2026-11-09",
+            end_date="2026-11-15",
+        )
+
+        for index in range(1, 4):
+            self.assertIn(
+                f"PAY-1-DOC-{index:03d}",
+                " ".join(paragraph_texts),
+            )
+            self.assertIn(
+                f"TXN-1-{index:03d}",
+                " ".join(paragraph_texts),
+            )
+            self.assertIn(
+                f"Document {index} of 3",
+                " ".join(paragraph_texts),
+            )
+        all_text = " ".join(paragraph_texts)
+        self.assertIn("Payroll Report #1", all_text)
+        self.assertIn("NOV 9–15, 2026", all_text)
+        next_payroll_text = " ".join(
+            self.build_payroll_pdf_paragraph_texts(
+                {"status": "draft", "drivers": drivers},
+                [],
+                drivers,
+                payroll_number=2,
+            )
+        )
+        self.assertNotIn("PAY-1-DOC-001", next_payroll_text)
+        self.assertIn("PAY-2-DOC-001", next_payroll_text)
+
+    def test_payroll_pdf_uses_one_trip_table_per_driver(self):
+        drivers = [
+            {"driver_id": index, "driver_key": f"id:{index}", "driver_name": f"Driver {index}"}
+            for index in range(1, 3)
+        ]
+        trips = [{
+            "driver_id": 1,
+            "driver_key": "id:1",
+            "driver_name": "Driver 1",
+            "payroll_date": "2026-11-09",
+            "ism_no": f"ISM-{index:03d}",
+            "origin": "DAV1",
+            "destination": "DAV2",
+            "rate": "200.00",
+            "eligible": True,
+        } for index in range(1, 26)]
+        paragraph_texts = self.build_payroll_pdf_paragraph_texts(
+            {"status": "draft", "drivers": drivers},
+            trips,
+            drivers,
+            start_date="2026-11-09",
+            end_date="2026-11-15",
+        )
+
+        self.assertNotIn("Trip details", paragraph_texts)
+        self.assertEqual(
+            sum(text.startswith("EMPLOYEE PAYSLIP ·") for text in paragraph_texts),
+            2,
+        )
+        self.assertEqual(
+            sum(text == "ISM-001" for text in paragraph_texts),
+            1,
+        )
+        self.assertEqual(
+            sum(text == "ISM-025" for text in paragraph_texts),
+            1,
+        )
 
     def test_generate_payroll_saves_snapshot_for_archive_and_pdf_download(self):
         manager = FleetManager(client=FakeSupabaseClient())
@@ -2413,7 +2520,11 @@ class PayrollCalculationTests(unittest.TestCase):
         )
         with patch.object(web_app, "manager", manager), patch.dict(
             web_app.app.config, {"TESTING": True, "TEST_AUTH_BYPASS": True}
-        ):
+        ), patch.object(
+            web_app,
+            "build_payroll_pdf_report",
+            wraps=web_app.build_payroll_pdf_report,
+        ) as build_report:
             client = web_app.app.test_client()
             csrf_token = client.get("/api/auth/csrf").json["csrf_token"]
             response = client.post(
@@ -2440,6 +2551,10 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertEqual(len(archive.json["reports"]), 1)
         self.assertEqual(pdf_response.status_code, 200)
         self.assertEqual(pdf_response.mimetype, "application/pdf")
+        self.assertEqual(
+            build_report.call_args.kwargs["payroll_number"],
+            response.json["generated"]["id"],
+        )
         self.assertRegex(
             pdf_response.data,
             rb"/MediaBox\s+\[\s*0\s+0\s+612\s+792\s*\]",
@@ -2450,6 +2565,7 @@ class PayrollCalculationTests(unittest.TestCase):
         migration_path = os.path.join(
             os.path.dirname(__file__),
             "..",
+            "Sql snippets",
             "supabase_generated_payroll_migration.sql",
         )
         with open(migration_path, encoding="utf-8") as migration_file:
@@ -2491,6 +2607,32 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertEqual(response.json["page_size"], 25)
         self.assertEqual(response.json["total"], 30)
         self.assertEqual(len(response.json["reports"]), 5)
+
+    def test_generated_payroll_archive_loading_has_timeout_and_retry(self):
+        app_js_path = os.path.join(
+            os.path.dirname(__file__), "..", "static", "app.js"
+        )
+        with open(app_js_path, encoding="utf-8") as app_js_file:
+            app_js = app_js_file.read()
+
+        load_function = app_js.split(
+            "async function loadGeneratedPayroll()", 1
+        )[1].split("function renderGeneratedPayroll()", 1)[0]
+        render_function = app_js.split(
+            "function renderGeneratedPayroll()", 1
+        )[1].split("function ", 1)[0]
+        self.assertIn("window.setTimeout(() => controller.abort(), 15000)", load_function)
+        self.assertIn("generated.error = error.name === \"AbortError\"", load_function)
+        self.assertIn("generated.loading = false", load_function)
+        self.assertIn(
+            "if (!generated.loading && !generated.loaded && !generated.error)",
+            render_function,
+        )
+        self.assertIn("data-action=\"generated-payroll-retry\"", app_js)
+        self.assertIn(
+            "state.page === \"generated-payroll\"",
+            app_js.split('if (button.dataset.action === "retry"', 1)[1],
+        )
 
     def test_payroll_pdf_omits_empty_adjustments_and_review_trips_from_payslip(self):
         trips = [
@@ -2555,9 +2697,9 @@ class PayrollCalculationTests(unittest.TestCase):
         )
 
         self.assertIn("Trips requiring review", paragraph_texts)
-        self.assertEqual(paragraph_texts.count("ISM-REVIEW-ONLY"), 2)
-        self.assertEqual(paragraph_texts.count("ISM-PAYABLE-01"), 2)
-        self.assertEqual(paragraph_texts.count("ISM-REFERENCE-ONLY"), 2)
+        self.assertEqual(paragraph_texts.count("ISM-REVIEW-ONLY"), 1)
+        self.assertEqual(paragraph_texts.count("ISM-PAYABLE-01"), 1)
+        self.assertEqual(paragraph_texts.count("ISM-REFERENCE-ONLY"), 1)
         self.assertNotIn("Cash advance details", paragraph_texts)
         self.assertNotIn("Overdraft transaction history", paragraph_texts)
         self.assertNotIn("Opening overdraft", paragraph_texts)
@@ -2655,7 +2797,7 @@ class PayrollCalculationTests(unittest.TestCase):
             pdf,
             rb"/MediaBox\s+\[\s*0\s+0\s+612\s+792\s*\]",
         )
-        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page\b", pdf)), 3)
+        self.assertGreaterEqual(len(re.findall(rb"/Type\s*/Page\b", pdf)), 2)
         self.assertTrue(pdf.rstrip().endswith(b"%%EOF"))
 
 
@@ -5299,8 +5441,8 @@ class FleetManagerTests(unittest.TestCase):
         index_page = client.get("/static/index.html")
         self.assertEqual(index_page.status_code, 200)
         self.assertIn(b'id="app-loading-screen"', index_page.data)
-        self.assertIn(b"tailwind.generated.css?v=driver-route-summary-2", index_page.data)
-        self.assertIn(b"app.js?v=driver-route-summary-2", index_page.data)
+        self.assertIn(b"tailwind.generated.css?v=driver-route-summary-3", index_page.data)
+        self.assertIn(b"app.js?v=driver-route-summary-6", index_page.data)
         index_page.close()
 
     def test_login_rejects_bad_credentials_and_requires_csrf(self):
