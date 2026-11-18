@@ -2445,14 +2445,10 @@ class PayrollCalculationTests(unittest.TestCase):
         )
 
         for index in range(1, 4):
-            self.assertIn(
-                f"PAY-1-DOC-{index:03d}",
-                " ".join(paragraph_texts),
-            )
-            self.assertIn(
-                f"TXN-1-{index:03d}",
-                " ".join(paragraph_texts),
-            )
+            document_number = f"PAY-1-2026-11-09-TO-2026-11-15-DOC-{index:03d}"
+            transaction_id = f"TXN-{document_number}"
+            self.assertIn(document_number, " ".join(paragraph_texts))
+            self.assertIn(transaction_id, " ".join(paragraph_texts))
             self.assertIn(
                 f"Document {index} of 3",
                 " ".join(paragraph_texts),
@@ -2460,6 +2456,8 @@ class PayrollCalculationTests(unittest.TestCase):
         all_text = " ".join(paragraph_texts)
         self.assertIn("Payroll Report #1", all_text)
         self.assertIn("NOV 9–15, 2026", all_text)
+        self.assertIn("Document Number:", all_text)
+        self.assertIn("Transaction ID:", all_text)
         next_payroll_text = " ".join(
             self.build_payroll_pdf_paragraph_texts(
                 {"status": "draft", "drivers": drivers},
@@ -2468,8 +2466,14 @@ class PayrollCalculationTests(unittest.TestCase):
                 payroll_number=2,
             )
         )
-        self.assertNotIn("PAY-1-DOC-001", next_payroll_text)
-        self.assertIn("PAY-2-DOC-001", next_payroll_text)
+        self.assertNotIn(
+            "PAY-1-2026-11-09-TO-2026-11-15-DOC-001",
+            next_payroll_text,
+        )
+        self.assertIn(
+            "PAY-2-2026-10-01-TO-2026-10-31-DOC-001",
+            next_payroll_text,
+        )
 
     def test_payroll_pdf_uses_one_trip_table_per_driver(self):
         drivers = [

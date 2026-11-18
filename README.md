@@ -437,9 +437,10 @@ filters, for later review and PDF download. Payroll PDFs use portrait letter
 pages, summarize pay first, then provide one continuous, repeating-header trip
 table per driver on a separate page.
 Each driver's summary row and payslip includes a globally unique document number
-and transaction ID qualified by the payroll report number, plus that driver's
-document position within the report. Archived PDFs reuse the saved report number
-so their identifiers remain unchanged when downloaded again.
+containing the payroll report number, full date range, and document sequence.
+Each transaction ID includes that document number. Payslips print these IDs on
+separate labeled lines; archived PDFs reuse the saved report number so the IDs
+remain unchanged when downloaded again.
 
 ## Data retrieval performance
 

@@ -224,13 +224,16 @@ def build_payroll_pdf_report(
         Decimal("0.00"),
     )
     document_count = len(summary_drivers)
+    payroll_range_id = f"{start_date}-TO-{end_date}"
     statement_widths = [
         available_width * weight / 100
         for weight in (17, 18, 6, 11, 10, 9, 10, 10, 9)
     ]
     statement_rows = []
     for index, driver in enumerate(summary_drivers, start=1):
-        document_number = f"PAY-{payroll_number}-DOC-{index:03d}"
+        document_number = (
+            f"PAY-{payroll_number}-{payroll_range_id}-DOC-{index:03d}"
+        )
         statement_rows.append([
             cell(driver.get("driver_name")),
             cell(document_number, small_style),
@@ -415,19 +418,24 @@ def build_payroll_pdf_report(
     for document_index, driver in enumerate(summary_drivers, start=1):
         story.append(PageBreak())
         driver_name = str(driver.get("driver_name") or "Unassigned Driver")
-        document_number = f"PAY-{payroll_number}-DOC-{document_index:03d}"
-        transaction_id = f"TXN-{payroll_number}-{document_index:03d}"
+        document_number = (
+            f"PAY-{payroll_number}-{payroll_range_id}-DOC-{document_index:03d}"
+        )
+        transaction_id = f"TXN-{document_number}"
         story.extend([
             Paragraph("Employee Payslip", title_style),
             Paragraph(f"<b>Employee:</b> {_text(driver_name)}", body_style),
             Paragraph(f"<b>Driver ID:</b> {_text(driver.get('driver_id'))}", body_style),
             Paragraph(
-                f"<b>Payroll #{_text(payroll_number)}</b> · {escape(short_period)} · "
+                f"<b>Payroll #{_text(payroll_number)} · {escape(short_period)}</b> · "
                 f"<b>Document {document_index} of {document_count}</b>",
                 body_style,
             ),
             Paragraph(
-                f"<b>Document Number:</b> {_text(document_number)} · "
+                f"<b>Document Number:</b> {_text(document_number)}",
+                body_style,
+            ),
+            Paragraph(
                 f"<b>Transaction ID:</b> {_text(transaction_id)}",
                 body_style,
             ),
