@@ -165,7 +165,14 @@ def _dispatch_rpc(function_name: str, params: dict[str, Any] | None = None) -> A
                 else (
                     "supabase_trip_records_migration.sql"
                     if function_name == "admin_trip_records_page"
-                    else "the latest location-dispatch migration"
+                    else (
+                        "supabase_dispatch_auto_trip_migration.sql"
+                        if function_name in {
+                            "create_dispatch_movement_with_load",
+                            "submit_dispatch_arrival",
+                        }
+                        else "the latest location-dispatch migration"
+                    )
                 )
             )
             raise FleetManagementError(
@@ -730,6 +737,16 @@ def _dispatch_timestamp(value: Any, field_name: str) -> str:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=BUSINESS_TIMEZONE)
     return parsed.isoformat()
+
+
+def _dispatch_date(value: Any, field_name: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        raise ValueError(f"{field_name} is required.")
+    try:
+        return date.fromisoformat(text).isoformat()
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a valid date.") from exc
 
 
 def _completed_trip_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1649,7 +1666,12 @@ def dispatch_movements() -> Any:
             "p_trailer_id": _integer(payload, "trailer_id"),
             "p_load_type": load_type,
             "p_pallet_quantity": pallet_quantity,
-            "p_departure_at": _dispatch_timestamp(payload.get("departure_at"), "Departure date and time"),
+            "p_departure_at": (
+                _dispatch_timestamp(payload.get("departure_at"), "Departure time")
+                if payload.get("departure_at")
+                else None
+            ),
+            "p_trip_date": _dispatch_date(payload.get("trip_date"), "Trip date"),
             "p_fuel_allocation": _optional_number(payload, "fuel_allocation"),
             "p_actual_fuel_expense": _optional_number(payload, "actual_fuel_expense"),
             "p_fuel_remarks": _optional_text(payload, "fuel_remarks"),
@@ -2103,14 +2125,18 @@ def submit_dispatch_movement_arrival(movement_id: uuid.UUID) -> Any:
         payload = _body()
         _dispatch_rpc("submit_dispatch_arrival", {
             "p_movement_id": str(movement_id),
-            "p_arrival_at": _dispatch_timestamp(payload.get("arrival_at"), "Arrival date and time"),
+            "p_arrival_at": (
+                _dispatch_timestamp(payload.get("arrival_at"), "Arrival time")
+                if payload.get("arrival_at")
+                else None
+            ),
             "p_arrival_fuel_expense": _optional_number(payload, "arrival_fuel_expense"),
         })
     except ValueError as exc:
         return _json_error(str(exc), 400)
     except FleetManagementError as exc:
         return _dispatch_error_response(exc)
-    return jsonify({"message": "Arrival submitted for admin review."})
+    return jsonify({"message": "Arrival recorded and the official trip was updated automatically."})
 
 
 @app.route(
@@ -2203,13 +2229,10 @@ def upload_dispatch_movement_document(movement_id: uuid.UUID, kind: str) -> Any:
 
 @app.route("/api/dispatch/movements/<uuid:movement_id>/finalize", methods=["POST"])
 def finalize_dispatch_movement(movement_id: uuid.UUID) -> Any:
-    try:
-        trip_id = _dispatch_rpc("finalize_dispatch_movement", {
-            "p_movement_id": str(movement_id),
-        })
-    except FleetManagementError as exc:
-        return _dispatch_error_response(exc)
-    return jsonify({"trip_id": trip_id})
+    return _json_error(
+        "Manual finalization has been replaced by automatic trip registration.",
+        410,
+    )
 
 
 @app.route("/api/dispatch/movements/<uuid:movement_id>", methods=["DELETE"])

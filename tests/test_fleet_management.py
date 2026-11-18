@@ -622,7 +622,7 @@ class AdminTripReportsTests(unittest.TestCase):
             [
                 "Overall Summary", "Route Summaries", "Route Details",
                 "Driver - Report Driver", "All Trips", "By Origin",
-                "By Destination", "By Truck", "By Trailer",
+                "By Destination", "By Truck", "By Trailer", "Summary Per Driver",
             ],
         )
         sheet = workbook["All Trips"]
@@ -633,8 +633,8 @@ class AdminTripReportsTests(unittest.TestCase):
         self.assertEqual(sheet["H12"].value.strftime("%Y-%m-%d"), "2026-01-05")
         self.assertEqual(sheet["H112"].value.strftime("%Y-%m-%d"), "2026-01-05")
         self.assertEqual(sheet["B5"].value, 101)
-        self.assertEqual(sheet["B6"].value, 101 * 1847)
-        self.assertEqual(sheet["B7"].value, 1847)
+        self.assertIsNone(sheet["B6"].value)
+        self.assertIsNone(sheet["B7"].value)
         self.assertEqual(sheet.freeze_panes, "A12")
         self.assertEqual(len(workbook["Driver - Report Driver"].tables), 2)
         self.assertEqual(len(workbook["By Truck"].tables), 1)
@@ -877,7 +877,7 @@ class AdminTripReportsTests(unittest.TestCase):
             [
                 "Overall Summary", "Route Summaries", "Route Details",
                 "Driver - Jane Doe", "Driver - John Doe", "All Trips", "By Origin",
-                "By Destination", "By Truck", "By Trailer",
+                "By Destination", "By Truck", "By Trailer", "Summary Per Driver",
             ],
         )
         jane_sheet = workbook["Driver - Jane Doe"]
@@ -1096,6 +1096,7 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
             "fuel_allocation": "36.5",
             "actual_fuel_expense": "2500",
             "departure_at": "2026-10-23T10:00",
+            "trip_date": "2026-10-23",
             "load_items": [{"product_id": "7", "pallet_quantity": "3"}],
         }
         with web_app.app.test_request_context(
@@ -1112,6 +1113,7 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(dispatch_rpc.call_args.args[1]["p_fuel_allocation"], 36.5)
         self.assertEqual(dispatch_rpc.call_args.args[1]["p_actual_fuel_expense"], 2500)
+        self.assertEqual(dispatch_rpc.call_args.args[1]["p_trip_date"], "2026-10-23")
 
     def test_dispatch_create_accepts_no_load_with_zero_pallets(self):
         payload = {
@@ -1124,6 +1126,7 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
             "load_type": "NO_LOAD",
             "pallet_quantity": "0",
             "departure_at": "2026-10-23T10:00",
+            "trip_date": "2026-10-23",
             "load_items": [],
         }
         with web_app.app.test_request_context(
@@ -1136,6 +1139,64 @@ class LoadCatalogIntegrationTests(unittest.TestCase):
         self.assertEqual(params["p_load_type"], "NO_LOAD")
         self.assertEqual(params["p_pallet_quantity"], 0)
         self.assertEqual(params["p_load_items"], [])
+
+    def test_dispatch_create_registers_trip_without_timestamps(self):
+        payload = {
+            "origin_location_id": "dav3",
+            "destination_location_id": "dav4",
+            "ism_no": "ISM-102",
+            "truck_id": "12",
+            "driver_id": "34",
+            "trailer_id": "56",
+            "load_type": "NO_LOAD",
+            "pallet_quantity": "0",
+            "trip_date": "2026-10-23",
+            "load_items": [],
+        }
+        with web_app.app.test_request_context(
+            "/api/dispatch/movements", method="POST", json=payload
+        ), patch.object(web_app, "_dispatch_rpc", return_value="movement-id") as dispatch_rpc:
+            response, status = web_app.dispatch_movements()
+
+        self.assertEqual(status, 201)
+        self.assertIsNone(dispatch_rpc.call_args.args[1]["p_departure_at"])
+        self.assertEqual(dispatch_rpc.call_args.args[1]["p_trip_date"], "2026-10-23")
+
+    def test_auto_trip_migration_registers_once_and_accepts_missing_times(self):
+        migration_path = os.path.join(
+            os.path.dirname(__file__), "..",
+            "Sql snippets", "supabase_dispatch_auto_trip_migration.sql",
+        )
+        with open(migration_path, encoding="utf-8") as migration_file:
+            migration = migration_file.read()
+
+        self.assertIn("alter column departure_at drop not null", migration)
+        self.assertIn("register_dispatch_movement_trip(movement_id)", migration)
+        self.assertIn("dispatch_movement_id, created_by", migration)
+        self.assertIn("if movement.canonical_trip_id is not null", migration)
+        self.assertIn("for update", migration)
+        self.assertIn("p_arrival_at is not null", migration)
+        self.assertIn("arrival_at = p_arrival_at", migration)
+        self.assertIn("revoke all on function public.finalize_dispatch_movement(uuid)", migration)
+
+    def test_arrival_submission_accepts_missing_timestamp(self):
+        movement_id = web_app.uuid.uuid4()
+        with web_app.app.test_request_context(
+            f"/api/dispatch/movements/{movement_id}/arrival",
+            method="POST",
+            json={"arrival_at": None, "arrival_fuel_expense": None},
+        ), patch.object(web_app, "_dispatch_rpc") as dispatch_rpc:
+            response = web_app.submit_dispatch_movement_arrival(movement_id)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(dispatch_rpc.call_args.args[1]["p_arrival_at"])
+
+    def test_manual_dispatch_finalize_endpoint_is_disabled(self):
+        with web_app.app.app_context():
+            response = web_app.finalize_dispatch_movement(web_app.uuid.uuid4())
+
+        self.assertEqual(response[1], 410)
+        self.assertIn("automatic trip registration", response[0].get_json()["error"].lower())
 
     def test_dispatch_create_rejects_products_for_no_load(self):
         payload = {
@@ -1291,6 +1352,72 @@ class PayrollCalculationTests(unittest.TestCase):
         self.assertEqual(canonical_warehouse_code("Davao Bottling Plant 1"), "DAV1")
         self.assertEqual(canonical_warehouse_code("PLAS Astorga"), "PLAS")
         self.assertIsNone(canonical_warehouse_code("UNKNOWN PLANT"))
+
+    def test_reference_trip_is_preserved_but_excluded_from_payable_totals(self):
+        from payroll import PayrollService
+
+        manager = SimpleNamespace(
+            client=Mock(),
+            _execute=Mock(return_value=SimpleNamespace(data=[])),
+            list_drivers=lambda: [{"id": 1, "name": "Jane Doe"}],
+            list_driver_pay_rates=lambda: [
+                {"route_class": "short", "allowance": "200.00"},
+                {"route_class": "long", "allowance": "900.00"},
+            ],
+            list_trips=Mock(side_effect=[
+                [
+                    {
+                        "id": 10,
+                        "trip_id": 10,
+                        "driver_id": 1,
+                        "driver_name": "Jane Doe",
+                        "shipment_date": "2026-10-28",
+                        "origin": "GENSAN",
+                        "destination": "DAV2",
+                    },
+                    {
+                        "id": 11,
+                        "trip_id": 11,
+                        "driver_id": 1,
+                        "driver_name": "Jane Doe",
+                        "shipment_date": "2026-11-02",
+                        "origin": "GENSAN",
+                        "destination": "DAV2",
+                    },
+                ],
+                [
+                    {
+                        "id": 10,
+                        "trip_id": 10,
+                        "driver_id": 1,
+                        "driver_name": "Jane Doe",
+                        "shipment_date": "2026-10-28",
+                        "origin": "GENSAN",
+                        "destination": "DAV2",
+                    },
+                    {
+                        "id": 11,
+                        "trip_id": 11,
+                        "driver_id": 1,
+                        "driver_name": "Jane Doe",
+                        "shipment_date": "2026-11-02",
+                        "origin": "GENSAN",
+                        "destination": "DAV2",
+                    },
+                ],
+            ]),
+        )
+        service = PayrollService(manager)
+        service._get_period = Mock(return_value=None)
+        service._rows = Mock(return_value=[])
+
+        report = service.report("2026-11-01", "2026-11-07")
+        reference_rows = [trip for trip in report["trips"] if trip.get("reference_only")]
+        self.assertEqual(len(reference_rows), 1)
+        self.assertEqual(reference_rows[0]["issue"], "REFERENCE ONLY – NOT PAYABLE")
+        self.assertFalse(reference_rows[0]["eligible"])
+        self.assertEqual(report["drivers"][0]["total_trips"], 1)
+        self.assertEqual(report["drivers"][0]["gross_pay"], "900.00")
 
     def test_truck_route_rates_match_directional_capacity_and_flag_missing_config(self):
         self.assertEqual(str(truck_route_rate("GENSAN", "DAV2", 36)), "11000.00")

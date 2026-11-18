@@ -345,6 +345,7 @@ const state = {
     departureLoadType: "",
     departurePalletQuantity: "",
     departureIsm: "",
+    departureDate: "",
     departureAt: "",
     departureFuelAllocation: "",
     departureFuelExpense: "",
@@ -2763,20 +2764,6 @@ function dispatchDateTime(value) {
     : new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(parsed);
 }
 
-function dispatchLocalDateTimeNow() {
-  const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Manila",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hourCycle: "h23",
-  }).formatToParts(new Date());
-  const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
-  return `${values.year}-${values.month}-${values.day}T${values.hour}:${values.minute}`;
-}
-
 function canViewDispatchIsm(movement, mode) {
   const isArrivalQueue = mode === "arrivals";
   const userId = String(state.data.user?.id || "");
@@ -2910,7 +2897,8 @@ function dispatchWizardReviewMarkup(form) {
     ["Pallet quantity", value("pallet_quantity")],
     ["Trailer contents", productSummary],
     ["ISM number", value("ism_no")],
-    ["Departure time", value("departure_at")],
+    ["Trip date", value("trip_date")],
+    ["Departure time", value("departure_at") === "Not provided" ? "Not recorded" : value("departure_at")],
     ["Fuel allocation", value("fuel_allocation") ? `${formatNumber(value("fuel_allocation"))} L` : "Not entered"],
     ["Actual fuel expense", value("actual_fuel_expense") ? `${formatCurrency(value("actual_fuel_expense"))}` : "Not entered"],
     ["Fuel remarks", value("fuel_remarks")],
@@ -3000,7 +2988,11 @@ function dispatchMovementCard(movement, mode) {
       ? "No load"
       : `${movement.load_type} · ${formatNumber(movement.pallet_quantity)} pallets`],
     ["Contents", movement.load_type === "NO_LOAD" ? "No load" : contentSummary],
+    ...(movement.trip_date ? [["Trip date", movement.trip_date]] : []),
     ["Departed", dispatchDateTime(movement.departure_at)],
+    ...(movement.canonical_trip_id
+      ? [["Official trip", `Trip #${movement.canonical_trip_id}`]]
+      : []),
     ...(movement.arrival_at ? [["Arrived", dispatchDateTime(movement.arrival_at)]] : []),
     ...(canViewIsm && movement.ism_no ? [["ISM", movement.ism_no]] : []),
   ];
@@ -3049,17 +3041,17 @@ function dispatchMovementCard(movement, mode) {
     actions = `
       <form class="dispatch-arrival-form" data-movement-id="${escapeHtml(movement.id)}">
         <div class="dialog-fields">
-          <label class="form-field"><span>Actual arrival date and time</span><input name="arrival_at" type="datetime-local" required /></label>
+          <label class="form-field"><span>Arrival time (optional)</span><input name="arrival_at" type="datetime-local" /></label>
           <label class="form-field"><span>Arrival fuel expense (optional)</span><input name="arrival_fuel_expense" type="number" min="0" step="0.01" /></label>
           <label class="form-field"><span>Arrival manifest / documentation</span><input name="arrival_manifest" type="file" data-dispatch-preview="arrival_manifest" accept="image/jpeg,image/png,image/webp" capture="environment" required /><img class="dispatch-image-preview" data-dispatch-preview="arrival_manifest" alt="Arrival document preview" hidden /></label>
         </div>
         <p class="dialog-error" role="alert" hidden></p>
-        <button class="button button-primary" type="submit">Record Arrival for Review</button>
+        <button class="button button-primary" type="submit">Record Arrival</button>
       </form>`;
   } else if (isAdmin && movement.status === "arrival_submitted") {
     actions = `
       <div class="dispatch-review-actions">
-        <button class="button button-primary" type="button" data-action="dispatch-finalize" data-id="${escapeHtml(movement.id)}">Finalize movement</button>
+        <button class="button button-primary" type="button" data-action="dispatch-arrival-review" data-id="${escapeHtml(movement.id)}">Record Arrival for Review</button>
         <button class="button button-secondary" type="button" data-action="dispatch-correction-toggle" data-id="${escapeHtml(movement.id)}">Request correction</button>
       </div>
       <form class="dispatch-correction-form" data-movement-id="${escapeHtml(movement.id)}" hidden>
@@ -3197,10 +3189,11 @@ function dispatchDepartureForm() {
           <section class="dispatch-load-summary" aria-labelledby="dispatch-load-summary-title"><h4 id="dispatch-load-summary-title">Selected trailer contents</h4><div class="dispatch-selected-load" aria-live="polite">${state.dispatch.departureLoadType === "NO_LOAD" ? '<p class="dispatch-load-empty">No load or pallets are recorded for this movement.</p>' : state.dispatch.departureLoadType === "EMPTIES" ? '<p class="dispatch-load-empty">Product selection is not required for empty-container movements.</p>' : selectedContents}</div></section>
         </section>
         <section class="dispatch-wizard-step" data-step="5" aria-labelledby="dispatch-step-title-5" hidden>
-          <h3 id="dispatch-step-title-5" tabindex="-1">Departure details and documentation</h3><p class="dispatch-wizard-instruction">Enter the departure reference and time, then attach the required departure manifest.</p>
+          <h3 id="dispatch-step-title-5" tabindex="-1">Departure details and documentation</h3><p class="dispatch-wizard-instruction">Enter the trip date and departure reference. Departure time is optional; attach the required departure manifest.</p>
           <div class="dialog-fields">
             <label class="form-field"><span>ISM number</span><input name="ism_no" required maxlength="120" autocomplete="off" value="${escapeHtml(state.dispatch.departureIsm || "")}" /></label>
-            <label class="form-field"><span>Departure date and time</span><input name="departure_at" type="datetime-local" value="${escapeHtml(state.dispatch.departureAt || dispatchLocalDateTimeNow())}" required /></label>
+            <label class="form-field"><span>Trip date</span><input name="trip_date" type="date" value="${escapeHtml(state.dispatch.departureDate || "")}" required /></label>
+            <label class="form-field"><span>Departure time (optional)</span><input name="departure_at" type="datetime-local" value="${escapeHtml(state.dispatch.departureAt || "")}" /></label>
             <label class="form-field"><span>Fuel allocation (L)</span><input name="fuel_allocation" type="number" min="0" step="0.01" placeholder="Liters" value="${escapeHtml(state.dispatch.departureFuelAllocation || "")}" /></label>
             <label class="form-field"><span>Actual fuel expense (₱)</span><input name="actual_fuel_expense" type="number" min="0" step="0.01" value="${escapeHtml(state.dispatch.departureFuelExpense || "")}" /></label>
             <label class="form-field"><span>Fuel remarks</span><input name="fuel_remarks" maxlength="500" value="${escapeHtml(state.dispatch.departureFuelRemarks || "")}" /></label>
@@ -3700,21 +3693,33 @@ function tripReportGroupedTables(records, groupBy) {
     route.label = route.identifier ? `Route ${route.identifier}` : "Route —";
   });
   const driverGroups = groupTripReportRecords(records, "driver");
-  const driverRouteSummary = `
-    <section class="trip-report-section">
-      <h3>Summary Per Driver</h3>
-      <div class="table-wrap"><table class="trip-record-table trip-driver-route-summary-table">
-        <thead>
-          <tr><th rowspan="2">Driver</th>${routes.map((route) => `<th>${escapeHtml(route.label)}</th>`).join("")}<th rowspan="2">No. of Trips</th></tr>
-          <tr>${routes.map((route) => `<th>${escapeHtml(`${route.origin} → ${route.destination}`)}</th>`).join("")}</tr>
-        </thead>
-        <tbody>${driverGroups.map((driver) => `<tr>
-          <th scope="row">${escapeHtml(driver.name)}</th>
-          ${routes.map((route) => `<td>${formatNumber(route.records.filter((trip) => driver.records.includes(trip)).length)}</td>`).join("")}
-          <td><strong>${formatNumber(driver.records.length)}</strong></td>
-        </tr>`).join("")}</tbody>
-      </table></div>
-    </section>`;
+  const routeChunkSize = 4;
+  const driverRouteSummary = Array.from(
+    { length: Math.ceil(routes.length / routeChunkSize) },
+    (_, chunkIndex) => {
+      const routeChunk = routes.slice(
+        chunkIndex * routeChunkSize,
+        (chunkIndex + 1) * routeChunkSize,
+      );
+      return `
+        <section class="trip-report-section">
+          <h3>Summary Per Driver${routes.length > routeChunkSize
+            ? ` · Routes ${chunkIndex * routeChunkSize + 1}–${chunkIndex * routeChunkSize + routeChunk.length}`
+            : ""}</h3>
+          <div class="table-wrap"><table class="trip-record-table trip-driver-route-summary-table">
+            <thead>
+              <tr><th rowspan="2">Driver</th>${routeChunk.map((route) => `<th>${escapeHtml(route.label)}</th>`).join("")}<th rowspan="2">No. of Trips</th></tr>
+              <tr>${routeChunk.map((route) => `<th>${escapeHtml(`${route.origin} → ${route.destination}`)}</th>`).join("")}</tr>
+            </thead>
+            <tbody>${driverGroups.map((driver) => `<tr>
+              <th scope="row">${escapeHtml(driver.name)}</th>
+              ${routeChunk.map((route) => `<td>${formatNumber(route.records.filter((trip) => driver.records.includes(trip)).length)}</td>`).join("")}
+              <td><strong>${formatNumber(driver.records.length)}</strong></td>
+            </tr>`).join("")}</tbody>
+          </table></div>
+        </section>`;
+    },
+  ).join("");
   const routeSummary = `
     <section class="trip-report-section">
       <h3>Route Summary</h3>
@@ -4417,7 +4422,8 @@ async function submitDispatchDeparture(form) {
           load_items: values.load_type === "FULLS"
             ? state.dispatch.departureLoadItems
             : [],
-          departure_at: values.departure_at,
+          departure_at: values.departure_at || null,
+          trip_date: values.trip_date,
           fuel_allocation: values.fuel_allocation || null,
           actual_fuel_expense: values.actual_fuel_expense || null,
           fuel_remarks: values.fuel_remarks || null,
@@ -4445,7 +4451,7 @@ async function submitDispatchDeparture(form) {
       form.dataset.fuelInvoiceUploaded = "true";
       form.elements.namedItem("fuel_invoice").disabled = true;
     }
-    showToast("Departure saved. It will enter the receiving queue with the required manifest.");
+    showToast("Departure saved and its official trip was registered. The movement will enter the receiving queue with its required manifest.");
     state.dispatch.loaded = false;
     state.dispatch.loading = false;
     state.dispatch.departureLoadItems = [];
@@ -4457,6 +4463,7 @@ async function submitDispatchDeparture(form) {
     state.dispatch.departureLoadType = "";
     state.dispatch.departurePalletQuantity = "";
     state.dispatch.departureIsm = "";
+    state.dispatch.departureDate = "";
     state.dispatch.departureAt = "";
     state.dispatch.departureFuelAllocation = "";
     state.dispatch.departureFuelExpense = "";
@@ -4550,7 +4557,7 @@ async function submitDispatchArrival(form) {
         }),
       },
     );
-    showToast("Arrival submitted for admin review.");
+    showToast("Arrival recorded and the official trip was updated automatically.");
     await refreshDispatcherDispatchView();
   } catch (error) {
     errorElement.textContent = error.message || "Could not submit this arrival.";
@@ -4559,7 +4566,7 @@ async function submitDispatchArrival(form) {
     form.dataset.submitting = "false";
     if (submit.isConnected) {
       submit.disabled = false;
-      submit.textContent = "Record Arrival for Review";
+      submit.textContent = "Record Arrival";
     }
   }
 }
@@ -4636,28 +4643,6 @@ async function submitDispatchCorrection(form) {
     errorElement.hidden = false;
   } finally {
     if (submit.isConnected) submit.disabled = false;
-  }
-}
-
-async function finalizeDispatchMovement(button) {
-  if (!window.confirm("Finalize this movement as one canonical trip for revenue and payroll?")) return;
-  button.disabled = true;
-  try {
-    const result = await api(
-      `/api/dispatch/movements/${encodeURIComponent(button.dataset.id)}/finalize`,
-      { method: "POST", body: JSON.stringify({}) },
-    );
-    showToast(`Movement finalized as trip #${result.trip_id}.`);
-    state.dispatch.loaded = false;
-    await loadDispatchWorkflow({ force: true });
-    const refreshed = await api("/api/bootstrap");
-    state.data = refreshed;
-    state.csrfToken = refreshed.csrf_token || state.csrfToken;
-    render();
-  } catch (error) {
-    showToast(error.message || "Could not finalize this movement.", "error");
-  } finally {
-    if (button.isConnected) button.disabled = false;
   }
 }
 
@@ -7708,6 +7693,7 @@ view.addEventListener("input", (event) => {
   if (dispatchForm) {
     const stateFields = {
       ism_no: "departureIsm",
+      trip_date: "departureDate",
       departure_at: "departureAt",
       fuel_allocation: "departureFuelAllocation",
       actual_fuel_expense: "departureFuelExpense",
@@ -8188,10 +8174,6 @@ view.addEventListener("click", async (event) => {
     state.dispatch.loaded = false;
     state.dispatch.error = "";
     loadDispatchWorkflow({ force: true });
-    return;
-  }
-  if (button.dataset.action === "dispatch-finalize") {
-    finalizeDispatchMovement(button);
     return;
   }
   if (button.dataset.action === "dispatch-delete-completed") {

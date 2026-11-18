@@ -136,7 +136,12 @@ def completed_trip_records(
         if str(trip.get("status") or "").strip().casefold() != "completed":
             continue
         trip_id = trip.get("id")
-        identity = f"id:{trip_id}" if trip_id is not None else f"row:{index}"
+        origin = " ".join(str(trip.get("origin") or "").split())
+        destination = " ".join(str(trip.get("destination") or "").split())
+        if trip_id is not None:
+            identity = f"id:{trip_id}|origin:{origin.casefold()}|destination:{destination.casefold()}"
+        else:
+            identity = f"row:{index}|origin:{origin.casefold()}|destination:{destination.casefold()}"
         unique_trips.setdefault(identity, trip)
     return order_trip_records(list(unique_trips.values()))
 
@@ -146,59 +151,117 @@ def _route_identifier(trip: dict[str, Any]) -> str:
     return str(route_number).strip() if route_number not in (None, "") else ""
 
 
+def _canonical_route_endpoint(value: Any) -> str:
+    text = " ".join(str(value or "").split()).casefold()
+    if not text:
+        return "unknown"
+    text = text.replace("&", " and ")
+    text = text.replace("/", " ")
+    text = "".join(ch for ch in text if ch.isalpha() or ch.isspace())
+    tokens = []
+    stopwords = {
+        "and",
+        "bottling",
+        "branch",
+        "center",
+        "city",
+        "depot",
+        "distribution",
+        "facility",
+        "market",
+        "plant",
+        "station",
+        "terminal",
+        "warehouse",
+    }
+    for token in text.split():
+        token = token.strip()
+        if token and token not in stopwords and len(token) > 1:
+            tokens.append(token)
+    return tokens[0] if tokens else "unknown"
+
+
+def _route_direction_signature(trip: dict[str, Any]) -> tuple[str, str]:
+    origin = _canonical_route_endpoint(trip.get("origin"))
+    destination = _canonical_route_endpoint(trip.get("destination"))
+    return origin, destination
+
+
 def group_trip_records_by_route(
     trips: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     trips = order_trip_records(trips)
-    groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
-    labels: dict[tuple[str, str], tuple[str, str, str]] = {}
+    groups: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    labels: dict[str, tuple[str, str, str, str]] = {}
+    route_number_entries: dict[str, list[dict[str, Any]]] = defaultdict(list)
+
     for trip in trips:
         origin = " ".join(str(trip.get("origin") or "").split())
         destination = " ".join(str(trip.get("destination") or "").split())
         route_number = trip.get("route_number")
         if route_number not in (None, ""):
-            key = ("route_number", str(route_number).strip().casefold())
-            identifier = str(route_number)
+            route_number_entries[str(route_number).strip()].append(trip)
         else:
             normalized_origin = " ".join(str(origin or "Unknown origin").split()).casefold()
             normalized_destination = " ".join(str(destination or "Unknown destination").split()).casefold()
-            key = (
-                "origin_destination",
-                f"{normalized_origin} -> {normalized_destination}",
+            key = f"route:{normalized_origin} -> {normalized_destination}"
+            groups[key].append(trip)
+            labels.setdefault(
+                key,
+                (
+                    "",
+                    origin or "Unknown origin",
+                    destination or "Unknown destination",
+                    key,
+                ),
             )
-            identifier = ""
 
-        groups[key].append(trip)
-        labels.setdefault(
-            key,
-            (
-                identifier,
-                origin or "Unknown origin",
-                destination or "Unknown destination",
-            ),
+    for route_number, route_trips in sorted(route_number_entries.items(), key=lambda item: item[0]):
+        direction_signatures = [_route_direction_signature(trip) for trip in route_trips]
+        has_reverse_direction = any(
+            signature_a != signature_b and (signature_a[0], signature_a[1]) == (signature_b[1], signature_b[0])
+            for index, signature_a in enumerate(direction_signatures)
+            for signature_b in direction_signatures[index + 1:]
         )
+
+        if not has_reverse_direction:
+            final_key = f"route-number:{route_number}"
+            groups[final_key] = list(route_trips)
+            labels[final_key] = (
+                str(route_number),
+                " ".join(str(route_trips[0].get("origin") or "Unknown origin").split()) or "Unknown origin",
+                " ".join(str(route_trips[0].get("destination") or "Unknown destination").split()) or "Unknown destination",
+                final_key,
+            )
+            continue
+
+        direction_group_map: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for trip in route_trips:
+            direction_key = "|".join(_route_direction_signature(trip))
+            direction_group_map[direction_key].append(trip)
+
+        for direction_tag, direction_trips in direction_group_map.items():
+            final_key = f"route-number:{route_number}|{direction_tag}"
+            groups[final_key] = list(direction_trips)
+            labels[final_key] = (
+                str(route_number),
+                " ".join(str(direction_trips[0].get("origin") or "Unknown origin").split()) or "Unknown origin",
+                " ".join(str(direction_trips[0].get("destination") or "Unknown destination").split()) or "Unknown destination",
+                final_key,
+            )
 
     ordered_keys = sorted(
         groups,
         key=lambda key: (
             labels[key][1].casefold(),
             labels[key][2].casefold(),
-            key[1].casefold(),
+            key.casefold(),
         ),
     )
+
     result = []
     for key in ordered_keys:
-        identifier, origin, destination = labels[key]
-        route_number = next(
-            (
-                trip.get("route_number")
-                for trip in groups[key]
-                if trip.get("route_number") not in (None, "")
-            ),
-            None,
-        )
-        if route_number not in (None, ""):
-            identifier = str(route_number)
+        identifier, origin, destination, _ = labels[key]
         result.append({
             "identifier": identifier,
             "label": f"Route {identifier}" if identifier else "Route —",

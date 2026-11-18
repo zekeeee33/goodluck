@@ -8,8 +8,9 @@ import re
 from typing import Any
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.pagebreak import Break
 from openpyxl.worksheet.table import Table, TableStyleInfo
 from report_branding import add_excel_report_branding
 from trip_report_utils import (
@@ -362,11 +363,12 @@ def build_filtered_trip_excel_report(
     overall = summarize_trip_records(trips)
     workbook = Workbook()
     workbook.properties.title = str(metadata.get("title") or "Trip Report")
-    workbook.properties.subject = "Filtered trip operations and gross revenue report"
+    workbook.properties.subject = "Filtered trip operations report"
     header_fill = PatternFill("solid", fgColor="1F4E78")
     title_fill = PatternFill("solid", fgColor="17365D")
     group_fill = PatternFill("solid", fgColor="D9EAF7")
     summary_fill = PatternFill("solid", fgColor="EAF1F8")
+    alternate_fill = PatternFill("solid", fgColor="EAF1F8")
     currency_format = '"₱"#,##0.00;[Red]-"₱"#,##0.00'
     number_format = "#,##0.0;[Red]-#,##0.0"
     table_style = TableStyleInfo(
@@ -780,105 +782,8 @@ def build_filtered_trip_excel_report(
                 row_number += 1
             row_number += 1
 
-        summary_last_column = len(headers)
-        if group_by == "all":
-            driver_groups = group_trip_records(trips, "driver")
-            route_groups = group_trip_records_by_route(trips)
-            route_index_by_trip = {
-                id(trip): route_index
-                for route_index, route in enumerate(route_groups)
-                for trip in route["trips"]
-            }
-            summary_last_column = len(route_groups) + 2
-            worksheet.merge_cells(
-                start_row=row_number,
-                start_column=1,
-                end_row=row_number,
-                end_column=summary_last_column,
-            )
-            summary_title = worksheet.cell(
-                row=row_number, column=1, value="Summary Per Driver"
-            )
-            summary_title.font = Font(bold=True, size=12, color="17365D")
-            summary_title.fill = summary_fill
-            row_number += 1
-
-            driver_header = worksheet.cell(row=row_number, column=1, value="Driver")
-            worksheet.merge_cells(
-                start_row=row_number,
-                start_column=1,
-                end_row=row_number + 1,
-                end_column=1,
-            )
-            driver_header.font = Font(bold=True, color="FFFFFF")
-            driver_header.fill = header_fill
-            driver_header.alignment = Alignment(
-                horizontal="center", vertical="center", wrap_text=True
-            )
-            for route_index, route in enumerate(route_groups, start=2):
-                route_header = worksheet.cell(
-                    row=row_number,
-                    column=route_index,
-                    value=route["label"],
-                )
-                route_header.font = Font(bold=True, color="FFFFFF")
-                route_header.fill = header_fill
-                route_header.alignment = Alignment(
-                    horizontal="center", vertical="center", wrap_text=True
-                )
-                route_detail = worksheet.cell(
-                    row=row_number + 1,
-                    column=route_index,
-                    value=f"{route['origin']} → {route['destination']}",
-                )
-                route_detail.font = Font(bold=True, color="17365D")
-                route_detail.fill = summary_fill
-                route_detail.alignment = Alignment(
-                    horizontal="center", vertical="center", wrap_text=True
-                )
-
-            total_header = worksheet.cell(
-                row=row_number, column=summary_last_column, value="No. of Trips"
-            )
-            worksheet.merge_cells(
-                start_row=row_number,
-                start_column=summary_last_column,
-                end_row=row_number + 1,
-                end_column=summary_last_column,
-            )
-            total_header.font = Font(bold=True, color="FFFFFF")
-            total_header.fill = header_fill
-            total_header.alignment = Alignment(
-                horizontal="center", vertical="center", wrap_text=True
-            )
-            row_number += 2
-
-            for driver_name, driver_trips in driver_groups:
-                route_counts = [0] * len(route_groups)
-                for trip in driver_trips:
-                    route_counts[route_index_by_trip[id(trip)]] += 1
-                driver_cell = worksheet.cell(
-                    row=row_number, column=1, value=driver_name
-                )
-                driver_cell.alignment = Alignment(vertical="top", wrap_text=True)
-                for route_index, trip_count in enumerate(route_counts, start=2):
-                    count_cell = worksheet.cell(
-                        row=row_number, column=route_index, value=trip_count
-                    )
-                    count_cell.number_format = "#,##0"
-                    count_cell.alignment = Alignment(horizontal="center")
-                total_cell = worksheet.cell(
-                    row=row_number,
-                    column=summary_last_column,
-                    value=len(driver_trips),
-                )
-                total_cell.number_format = "#,##0"
-                total_cell.font = Font(bold=True)
-                total_cell.alignment = Alignment(horizontal="center")
-                row_number += 1
-
         last_row = max(9, row_number - 1)
-        last_column = get_column_letter(max(len(headers), summary_last_column))
+        last_column = get_column_letter(len(headers))
         worksheet.print_area = f"'{sheet_title}'!$A$1:${last_column}${last_row}"
         for column, (field, label) in enumerate(report_fields, start=1):
             values = [label]
@@ -890,24 +795,171 @@ def build_filtered_trip_excel_report(
             worksheet.column_dimensions[get_column_letter(column)].width = min(
                 max(max(map(len, values), default=0) + 2, 12), 40
             )
-        if group_by == "all":
-            for column in range(2, summary_last_column):
-                worksheet.column_dimensions[get_column_letter(column)].width = max(
-                    worksheet.column_dimensions[get_column_letter(column)].width,
-                    28,
-                )
-            worksheet.column_dimensions[
-                get_column_letter(summary_last_column)
-            ].width = max(
-                worksheet.column_dimensions[
-                    get_column_letter(summary_last_column)
-                ].width,
-                16,
+    if trips:
+        driver_groups = group_trip_records(trips, "driver")
+        route_groups = group_trip_records_by_route(trips)
+        route_index_by_trip = {
+            id(trip): route_index
+            for route_index, route in enumerate(route_groups)
+            for trip in route["trips"]
+        }
+        summary_sheet = workbook.create_sheet("Summary Per Driver")
+        summary_sheet.sheet_view.showGridLines = False
+        summary_sheet["A1"] = "Summary Per Driver"
+        route_chunk_size = 4
+        summary_row = 4
+        summary_border = Border(
+            left=Side(style="thin", color="64748B"),
+            right=Side(style="thin", color="64748B"),
+            top=Side(style="thin", color="64748B"),
+            bottom=Side(style="thin", color="64748B"),
+        )
+        summary_white_fill = PatternFill("solid", fgColor="FFFFFF")
+        route_detail_fill = PatternFill("solid", fgColor="CBD5E1")
+        summary_alternate_fill = PatternFill("solid", fgColor="E2E8F0")
+        for chunk_start in range(0, len(route_groups), route_chunk_size):
+            if chunk_start:
+                summary_sheet.row_breaks.append(Break(id=summary_row - 1))
+            route_chunk = route_groups[chunk_start:chunk_start + route_chunk_size]
+            last_column = len(route_chunk) + 2
+            summary_sheet.merge_cells(
+                start_row=summary_row,
+                start_column=1,
+                end_row=summary_row,
+                end_column=last_column,
             )
+            title_cell = summary_sheet.cell(
+                row=summary_row,
+                column=1,
+                value=(
+                    "Summary Per Driver · "
+                    f"Routes {chunk_start + 1}–{chunk_start + len(route_chunk)}"
+                ),
+            )
+            title_cell.font = Font(bold=True, size=14, color="17365D")
+            title_cell.fill = summary_fill
+            summary_sheet.row_dimensions[summary_row].height = 26
+            summary_row += 1
+
+            summary_sheet.merge_cells(
+                start_row=summary_row,
+                start_column=1,
+                end_row=summary_row + 1,
+                end_column=1,
+            )
+            driver_header = summary_sheet.cell(
+                row=summary_row, column=1, value="Driver"
+            )
+            driver_header.font = Font(bold=True, color="FFFFFF")
+            driver_header.fill = header_fill
+            driver_header.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
+            driver_header.border = summary_border
+            for route_offset, route in enumerate(route_chunk, start=2):
+                route_header = summary_sheet.cell(
+                    row=summary_row, column=route_offset, value=route["label"]
+                )
+                route_header.font = Font(bold=True, color="FFFFFF")
+                route_header.fill = header_fill
+                route_header.alignment = Alignment(
+                    horizontal="center", vertical="center", wrap_text=True
+                )
+                route_header.border = summary_border
+                route_detail = summary_sheet.cell(
+                    row=summary_row + 1,
+                    column=route_offset,
+                    value=f"{route['origin']} → {route['destination']}",
+                )
+                route_detail.font = Font(bold=True, size=11, color="172033")
+                route_detail.fill = route_detail_fill
+                route_detail.alignment = Alignment(
+                    horizontal="center", vertical="center", wrap_text=True
+                )
+                route_detail.border = summary_border
+
+            total_column = last_column
+            summary_sheet.merge_cells(
+                start_row=summary_row,
+                start_column=total_column,
+                end_row=summary_row + 1,
+                end_column=total_column,
+            )
+            total_header = summary_sheet.cell(
+                row=summary_row, column=total_column, value="No. of Trips"
+            )
+            total_header.font = Font(bold=True, color="FFFFFF")
+            total_header.fill = header_fill
+            total_header.alignment = Alignment(
+                horizontal="center", vertical="center", wrap_text=True
+            )
+            total_header.border = summary_border
+            summary_sheet.row_dimensions[summary_row].height = 24
+            summary_sheet.row_dimensions[summary_row + 1].height = 42
+            summary_row += 2
+
+            for driver_index, (driver_name, driver_trips) in enumerate(driver_groups):
+                counts = [0] * len(route_chunk)
+                for trip in driver_trips:
+                    route_index = route_index_by_trip[id(trip)]
+                    if chunk_start <= route_index < chunk_start + len(route_chunk):
+                        counts[route_index - chunk_start] += 1
+                driver_cell = summary_sheet.cell(
+                    row=summary_row, column=1, value=driver_name
+                )
+                driver_cell.alignment = Alignment(
+                    vertical="center", wrap_text=True, indent=1
+                )
+                driver_cell.fill = (
+                    summary_alternate_fill if driver_index % 2 else summary_white_fill
+                )
+                driver_cell.border = summary_border
+                driver_cell.font = Font(size=11, color="172033")
+                for route_offset, trip_count in enumerate(counts, start=2):
+                    count_cell = summary_sheet.cell(
+                        row=summary_row, column=route_offset, value=trip_count
+                    )
+                    count_cell.alignment = Alignment(
+                        horizontal="center", vertical="center"
+                    )
+                    count_cell.number_format = "#,##0"
+                    count_cell.fill = (
+                        summary_alternate_fill if driver_index % 2 else summary_white_fill
+                    )
+                    count_cell.border = summary_border
+                    count_cell.font = Font(size=11, color="172033")
+                total_cell = summary_sheet.cell(
+                    row=summary_row, column=total_column, value=len(driver_trips)
+                )
+                total_cell.alignment = Alignment(
+                    horizontal="center", vertical="center"
+                )
+                total_cell.font = Font(bold=True)
+                total_cell.number_format = "#,##0"
+                total_cell.fill = (
+                    summary_alternate_fill if driver_index % 2 else summary_white_fill
+                )
+                total_cell.border = summary_border
+                summary_row += 1
+            summary_row += 2
+
+        summary_sheet.freeze_panes = "B7"
+        summary_sheet.column_dimensions["A"].width = 28
+        for column in range(2, summary_sheet.max_column):
+            summary_sheet.column_dimensions[get_column_letter(column)].width = 32
+        summary_sheet.column_dimensions[
+            get_column_letter(summary_sheet.max_column)
+        ].width = 15
+        summary_sheet.page_setup.orientation = "landscape"
+        summary_sheet.page_setup.paperSize = summary_sheet.PAPERSIZE_A3
+        summary_sheet.page_setup.fitToWidth = 1
+        summary_sheet.page_setup.fitToHeight = 0
+        summary_sheet.sheet_properties.pageSetUpPr.fitToPage = True
 
     for worksheet in workbook.worksheets:
         worksheet.page_setup.orientation = "landscape"
-        worksheet.page_setup.paperSize = worksheet.PAPERSIZE_A4
+        if worksheet.title != "Summary Per Driver":
+            worksheet.page_setup.paperSize = worksheet.PAPERSIZE_A4
         worksheet.page_setup.fitToWidth = 1
         worksheet.page_setup.fitToHeight = 0
         worksheet.sheet_properties.pageSetUpPr.fitToPage = True

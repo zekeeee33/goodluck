@@ -207,6 +207,71 @@ class PayrollService:
         }
         rows: list[dict[str, Any]] = []
         issues: list[dict[str, Any]] = []
+        reference_trip_by_driver: dict[str, dict[str, Any]] = {}
+        for trip in self.manager.list_trips(include_fuel=False):
+            trip_date = self._trip_date(trip)
+            if not trip_date or str(trip_date) >= start_date:
+                continue
+            if str(trip.get("status") or "").casefold() in {
+                "cancelled",
+                "canceled",
+                "invalid",
+                "void",
+                "deleted",
+            }:
+                continue
+            trip_driver_id = trip.get("driver_id")
+            trip_driver_name = trip.get("driver_name") or trip.get("name")
+            driver_keys: list[str] = []
+            if trip_driver_id is not None:
+                driver_keys.append(f"id:{trip_driver_id}")
+            name_key = _normalized_driver_name(trip_driver_name)
+            if name_key:
+                driver_keys.append(f"name:{name_key}")
+            if not driver_keys:
+                continue
+            for driver_key in driver_keys:
+                current = reference_trip_by_driver.get(driver_key)
+                if current is None or str(self._trip_date(current)) < str(trip_date):
+                    reference_trip_by_driver[driver_key] = trip
+
+        for driver_key, reference_trip in reference_trip_by_driver.items():
+            trip_id = str(reference_trip.get("trip_id", reference_trip.get("id", "")))
+            if any(
+                str(row.get("trip_id", row.get("id", ""))) == trip_id
+                for row in rows
+            ):
+                continue
+            driver_id = reference_trip.get("driver_id")
+            if driver_id is None:
+                name_key = _normalized_driver_name(reference_trip.get("driver_name") or reference_trip.get("name"))
+                matches = drivers_by_name.get(name_key, [])
+                if not matches and len(name_key.split()) == 1:
+                    last_name_key = name_key.strip(".,")
+                    matches = drivers_by_last_name.get(last_name_key, [])
+                if len(matches) == 1:
+                    driver_id = matches[0].get("id")
+            ref_driver_name = (
+                (drivers_by_id.get(str(driver_id)) or {}).get("name")
+                if driver_id is not None else None
+            ) or reference_trip.get("driver_name") or reference_trip.get("name") or "Unassigned driver"
+            rate = trip_rate(reference_trip.get("origin"), reference_trip.get("destination"), allowances)
+            rows.append(
+                {
+                    **reference_trip,
+                    "id": reference_trip.get("id"),
+                    "trip_id": trip_id or reference_trip.get("id"),
+                    "driver_id": driver_id,
+                    "driver_key": driver_key,
+                    "payroll_date": self._trip_date(reference_trip),
+                    "driver_name": ref_driver_name,
+                    "rate": None,
+                    "eligible": False,
+                    "issue": "REFERENCE ONLY – NOT PAYABLE",
+                    "reference_only": True,
+                }
+            )
+
         for trip in trips:
             trip_id = str(trip.get("trip_id", trip.get("id", "")))
             if period and period.get("status") in {"reviewed", "finalized"}:
@@ -259,7 +324,7 @@ class PayrollService:
                 "eligible": issue is None,
                 "issue": issue,
             }
-            if issue:
+            if issue and issue != "REFERENCE ONLY – NOT PAYABLE":
                 issues.append(row)
             rows.append(row)
 

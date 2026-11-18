@@ -150,7 +150,7 @@ class TripCountReportTests(unittest.TestCase):
         all_trips_sheet = workbook["All Trips"]
         self.assertIn("Trips: 3", all_trips_sheet["A10"].value)
 
-    def test_all_trips_sheet_includes_driver_route_matrix_below_records(self):
+    def test_driver_route_matrix_is_in_readable_separate_sheet(self):
         trips = [
             trip(1, driver="Driver A", origin="DAV1", destination="DAV2"),
             trip(3, driver="Driver A", origin="DAV1", destination="DAV2"),
@@ -168,28 +168,57 @@ class TripCountReportTests(unittest.TestCase):
             trips,
             {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
         ))
-        worksheet = workbook["All Trips"]
-        summary_title_row = next(
-            row for row in range(1, worksheet.max_row + 1)
-            if worksheet.cell(row=row, column=1).value == "Summary Per Driver"
-        )
-
-        self.assertGreater(summary_title_row, 15)
-        header_row = summary_title_row + 1
-        self.assertEqual(worksheet.cell(row=header_row, column=1).value, "Driver")
-        self.assertEqual(worksheet.cell(row=header_row, column=2).value, "Route 2")
-        self.assertEqual(worksheet.cell(row=header_row + 1, column=2).value, "DAV1 → DAV2")
-        self.assertEqual(worksheet.cell(row=header_row, column=3).value, "Route 6")
-        self.assertEqual(worksheet.cell(row=header_row + 1, column=3).value, "DAV2 → PLAS")
-        self.assertEqual(worksheet.cell(row=header_row, column=4).value, "No. of Trips")
+        self.assertNotIn("Summary Per Driver", workbook["All Trips"]["A10"].value or "")
+        worksheet = workbook["Summary Per Driver"]
+        self.assertIn("Summary Per Driver", worksheet["B1"].value)
+        self.assertIn("Summary Per Driver", worksheet["A4"].value)
+        self.assertEqual(worksheet["A5"].value, "Driver")
+        self.assertEqual(worksheet["B5"].value, "Route 2")
+        self.assertEqual(worksheet["B6"].value, "DAV1 → DAV2")
+        self.assertEqual(worksheet["C5"].value, "Route 6")
+        self.assertEqual(worksheet["C6"].value, "DAV2 → PLAS")
+        self.assertEqual(worksheet["D5"].value, "No. of Trips")
+        self.assertEqual(worksheet["B5"].fill.fgColor.rgb, "001F4E78")
+        self.assertEqual(worksheet["B5"].font.color.rgb, "00FFFFFF")
+        self.assertEqual(worksheet["B6"].fill.fgColor.rgb, "00CBD5E1")
+        self.assertEqual(worksheet["B6"].font.color.rgb, "00172033")
+        self.assertEqual(worksheet["B7"].font.color.rgb, "00172033")
         self.assertEqual(
-            [worksheet.cell(row=header_row + 2, column=column).value for column in range(1, 5)],
+            [worksheet.cell(row=7, column=column).value for column in range(1, 5)],
             ["Driver A", 2, 0, 2],
         )
         self.assertEqual(
-            [worksheet.cell(row=header_row + 3, column=column).value for column in range(1, 5)],
+            [worksheet.cell(row=8, column=column).value for column in range(1, 5)],
             ["Driver B", 1, 1, 2],
         )
+        self.assertLessEqual(worksheet.max_column, 6)
+
+    def test_driver_route_matrix_splits_after_four_routes(self):
+        trips = [
+            {
+                **trip(route_number, driver="Driver A", origin=f"ORG{route_number}", destination=f"DST{route_number}"),
+                "route_number": route_number,
+            }
+            for route_number in range(1, 6)
+        ]
+        workbook = load_workbook(build_filtered_trip_excel_report(
+            trips,
+            {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
+        ))
+        worksheet = workbook["Summary Per Driver"]
+
+        self.assertIn("Routes 1–4", worksheet["A4"].value)
+        self.assertEqual(
+            [worksheet.cell(row=5, column=column).value for column in range(2, 7)],
+            ["Route 1", "Route 2", "Route 3", "Route 4", "No. of Trips"],
+        )
+        self.assertIn("Routes 5–5", worksheet["A10"].value)
+        self.assertEqual(
+            [worksheet.cell(row=11, column=column).value for column in range(2, 4)],
+            ["Route 5", "No. of Trips"],
+        )
+        self.assertEqual([page_break.id for page_break in worksheet.row_breaks.brk], [9])
+        self.assertLessEqual(worksheet.max_column, 6)
 
     def test_route_grouping_uses_route_number_when_names_vary(self):
         trips = [
@@ -230,7 +259,7 @@ class TripCountReportTests(unittest.TestCase):
             {"title": "All Trips", "generated_at": "", "filter_summary": "All trips"},
         )
         page_count = len(re.findall(rb"/Type\s*/Page\b", pdf.getvalue()))
-        self.assertEqual(page_count, 2)
+        self.assertEqual(page_count, 3)
 
 
 if __name__ == "__main__":
