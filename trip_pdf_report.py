@@ -241,20 +241,17 @@ def build_trip_pdf_report(
                 Paragraph(str(len(driver_trips)), compact_cell_style),
             ])
 
-        route_columns_width = max(
-            8 * mm,
-            (available_width - 42 * mm - 22 * mm) / max(len(routes), 1),
-        )
+        route_columns_width = 10 * mm
         matrix_column_widths = [
-            42 * mm,
+            34 * mm,
             *[route_columns_width for _ in routes],
-            22 * mm,
+            18 * mm,
         ]
         matrix_table = Table(
             matrix_rows,
             colWidths=matrix_column_widths,
             repeatRows=1,
-            hAlign="LEFT",
+            hAlign="CENTER",
             style=TableStyle([
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
                 ("ROWBACKGROUNDS", (0, 1), (-1, -1), [

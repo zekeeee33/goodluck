@@ -900,9 +900,11 @@ button.dispatcher-summary-card:hover { transform: translateY(-1px); border-color
 .trip-report-preview .trip-record-table { min-width: 1120px; }
 .trip-report-preview .trip-record-table th,
 .trip-report-preview .trip-record-table td { padding: 4px 5px; font-size: 10px; line-height: 1.15; }
-.trip-report-preview .trip-driver-route-summary-table { table-layout: fixed; width: 100%; }
+.trip-report-preview .trip-driver-route-summary-table { table-layout: fixed; width: 100%; max-width: 820px; margin: 0 auto; }
 .trip-report-preview .trip-driver-route-summary-table th,
-.trip-report-preview .trip-driver-route-summary-table td { min-width: 0; padding: 3px 4px; overflow-wrap: anywhere; }
+.trip-report-preview .trip-driver-route-summary-table td { min-width: 0; padding: 2px 3px; font-size: 9px; overflow-wrap: anywhere; }
+.trip-report-preview .trip-driver-route-summary-table th:first-child { width: 150px; }
+.trip-report-preview .trip-driver-route-summary-table th:last-child { width: 72px; }
 .trip-report-preview .trip-report-summary-table { min-width: 0 !important; width: 100%; table-layout: fixed; }
 .trip-record-filter-disclosure { margin-top: 12px; }
 .trip-record-filter-summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; list-style: none; }
@@ -1487,7 +1489,7 @@ tbody tr:hover { background: var(--table-hover); }
   .trip-route-legend { margin-bottom: 3px; font-size: 6pt; line-height: 1.15; }
   .trip-report-preview .trip-record-table,
   .trip-report-preview .trip-report-summary-table,
-  .trip-report-preview .trip-driver-route-summary-table { min-width: 0 !important; width: 100% !important; table-layout: fixed; font-size: 6.5pt; }
+  .trip-report-preview .trip-driver-route-summary-table { min-width: 0 !important; width: 100% !important; max-width: 820px; margin: 0 auto; table-layout: fixed; font-size: 6.5pt; }
   .trip-report-preview .trip-record-table th,
   .trip-report-preview .trip-record-table td { padding: 1.5px 2px; line-height: 1.05; }
   .trip-report-preview .trip-driver-route-summary-table th,
