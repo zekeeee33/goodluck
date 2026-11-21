@@ -3,6 +3,46 @@
 
 begin;
 
+-- MUA538's 36-pallet rated capacity was confirmed for this repair. Do not
+-- silently replace a different capacity already recorded for the trailer.
+do $$
+declare
+    trailer_row public.trailers%rowtype;
+begin
+    select *
+    into trailer_row
+    from public.trailers
+    where upper(btrim(plate_number)) = 'MUA538'
+    for update;
+
+    if not found then
+        raise exception 'Trailer MUA538 was not found; rate backfill stopped.';
+    end if;
+
+    if trailer_row.pallet_capacity is not null
+       and trailer_row.pallet_capacity <> 36 then
+        raise exception 'Trailer MUA538 already has a different pallet capacity (%); review before rate backfill.',
+            trailer_row.pallet_capacity;
+    end if;
+
+    update public.trailers
+    set pallet_capacity = 36,
+        capacity_review_required = false,
+        updated_at = now()
+    where id = trailer_row.id;
+end;
+$$;
+
+-- Use the confirmed trailer capacity for its trips that still lack a rate,
+-- even if a previous backfill inferred a different capacity from load details.
+update public.trips as trip
+set pallet_capacity = trailer.pallet_capacity
+from public.trailers as trailer
+where trip.trailer_id = trailer.id
+  and upper(btrim(trailer.plate_number)) = 'MUA538'
+  and trailer.pallet_capacity = 36
+  and trip.truck_route_rate is null;
+
 with trip_routes as (
     select
         trip.id as trip_id,

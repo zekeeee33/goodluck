@@ -3454,10 +3454,11 @@ function renderDriverRouteSummary(rows) {
   );
   const table = routeEntries.length
     ? `<div class="trip-driver-route-summary-wrap"><table class="trip-record-table trip-driver-route-summary-table" aria-label="Trip counts by driver and route">
-        <thead>
-          <tr><th scope="col" rowspan="2">Driver</th>${routeEntries.map(([, route]) => `<th scope="col">${escapeHtml(route.label)}</th>`).join("")}<th scope="col" rowspan="2">No. of Trips</th></tr>
-          <tr>${routeEntries.map(([, route]) => `<th scope="col">${escapeHtml(route.origin)} → ${escapeHtml(route.destination)}</th>`).join("")}</tr>
-        </thead>
+        <thead><tr>
+          <th scope="col">Driver</th>
+          ${routeEntries.map(([, route]) => `<th scope="col" aria-label="${escapeHtml(`${route.label}: ${route.origin} to ${route.destination}`)}"><span class="trip-driver-route-summary-route">${escapeHtml(route.label)}</span><span class="trip-driver-route-summary-path">${escapeHtml(route.origin)} → ${escapeHtml(route.destination)}</span></th>`).join("")}
+          <th scope="col" class="trip-driver-route-summary-total-heading">Total</th>
+        </tr></thead>
         <tbody>${driverEntries.map(([driverName, counts]) => {
           const total = [...counts.values()].reduce((sum, count) => sum + count, 0);
           return `<tr>
@@ -3708,7 +3709,7 @@ function tripReportGroupedTables(records, groupBy) {
     route.label = route.identifier ? `Route ${route.identifier}` : "Route —";
   });
   const driverGroups = groupTripReportRecords(records, "driver");
-  const routeChunkSize = 4;
+  const routeChunkSize = routes.length || 1;
   const driverRouteSummary = Array.from(
     { length: Math.ceil(routes.length / routeChunkSize) },
     (_, chunkIndex) => {

@@ -35,6 +35,18 @@ ROUTE_DETAIL_FIELDS = tuple(
     if field not in {"origin", "destination"}
 )
 
+SHORT_ROUTE_LOCATIONS = {
+    "davao bottling plant 1": "DAV1",
+    "davao bottling plant 2": "DAV2",
+    "gensan distribution center": "GENSAN",
+    "plas astorga": "PLAS",
+}
+
+
+def _short_route_location(location: str) -> str:
+    normalized = " ".join(location.split()).casefold()
+    return SHORT_ROUTE_LOCATIONS.get(normalized, location)
+
 
 def build_trip_pdf_report(
     trips: list[dict[str, Any]],
@@ -87,7 +99,12 @@ def build_trip_pdf_report(
     )
     matrix_route_style = ParagraphStyle(
         "TripReportMatrixRoute", parent=header_style,
+        fontSize=6.5, leading=7.5,
         textColor=colors.HexColor("#172033"),
+    )
+    compact_cell_style = ParagraphStyle(
+        "TripReportCompactCell", parent=cell_style,
+        fontSize=6.5, leading=7.5,
     )
     summary = summarize_trip_records(trips)
     grouping = str(metadata.get("group_by") or metadata.get("report_type") or "all")
@@ -167,22 +184,17 @@ def build_trip_pdf_report(
     for route in routes:
         route_totals = summarize_trip_records(route["trips"])
         route_summary_rows.append([
-            Paragraph(escape(route["label"]), cell_style),
-            Paragraph(escape(route["origin"]), cell_style),
-            Paragraph(escape(route["destination"]), cell_style),
-            Paragraph(str(route_totals["total_trips"]), cell_style),
+            Paragraph(escape(route["label"]), compact_cell_style),
+            Paragraph(escape(_short_route_location(route["origin"])), compact_cell_style),
+            Paragraph(escape(_short_route_location(route["destination"])), compact_cell_style),
+            Paragraph(str(route_totals["total_trips"]), compact_cell_style),
         ])
     if grouping != "driver":
         story.extend([
             Paragraph("Route Summary", group_style),
             Table(
                 route_summary_rows,
-                colWidths=[
-                    available_width * 0.14,
-                    available_width * 0.29,
-                    available_width * 0.29,
-                    available_width * 0.28,
-                ],
+                colWidths=[25 * mm, 42 * mm, 42 * mm, 25 * mm],
                 repeatRows=1,
                 style=TableStyle([
                     ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
@@ -191,93 +203,79 @@ def build_trip_pdf_report(
                     ]),
                     ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#CBD5E1")),
                     ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 4),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 4),
-                    ("TOPPADDING", (0, 0), (-1, -1), 4),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2.5),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2.5),
+                    ("TOPPADDING", (0, 0), (-1, -1), 1),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 1),
                 ]),
             ),
             Spacer(1, 3 * mm),
         ])
 
     if routes:
-        route_chunk_size = 4
-        route_chunks = [
-            routes[index:index + route_chunk_size]
-            for index in range(0, len(routes), route_chunk_size)
-        ]
-        for chunk_index, route_chunk in enumerate(route_chunks):
-            story.extend([
-                PageBreak(),
+        story.append(Paragraph("Summary Per Driver", group_style))
+        matrix_rows = [[
+            Paragraph("Driver", header_style),
+            *[Paragraph(escape(route["label"]), header_style) for route in routes],
+            Paragraph("No. of Trips", header_style),
+        ], [
+            Paragraph("", header_style),
+            *[
                 Paragraph(
-                    (
-                        f"Summary Per Driver · Routes "
-                        f"{chunk_index * route_chunk_size + 1}–"
-                        f"{chunk_index * route_chunk_size + len(route_chunk)}"
+                    escape(
+                        f"{_short_route_location(route['origin'])} → "
+                        f"{_short_route_location(route['destination'])}"
                     ),
-                    group_style,
-                ),
-            ])
-            matrix_rows = [[
-                Paragraph("Driver", header_style),
-                *[
-                    Paragraph(escape(route["label"]), header_style)
-                    for route in route_chunk
-                ],
-                Paragraph("No. of Trips", header_style),
-            ], [
-                Paragraph("", header_style),
-                *[
-                    Paragraph(
-                        escape(f"{route['origin']} → {route['destination']}"),
-                        matrix_route_style,
-                    )
-                    for route in route_chunk
-                ],
-                Paragraph("", header_style),
-            ]]
-            for driver_name, driver_trips in drivers:
-                driver_trip_ids = {id(trip) for trip in driver_trips}
-                route_counts = [
-                    sum(id(trip) in driver_trip_ids for trip in route["trips"])
-                    for route in route_chunk
-                ]
-                matrix_rows.append([
-                    Paragraph(escape(driver_name), cell_style),
-                    *[Paragraph(str(count), cell_style) for count in route_counts],
-                    Paragraph(str(len(driver_trips)), cell_style),
-                ])
-            matrix_column_widths = [
-                available_width * 0.18,
-                *[
-                    available_width * 0.72 / len(route_chunk)
-                    for _ in route_chunk
-                ],
-                available_width * 0.10,
+                    matrix_route_style,
+                )
+                for route in routes
+            ],
+            Paragraph("", header_style),
+        ]]
+        for driver_name, driver_trips in drivers:
+            driver_trip_ids = {id(trip) for trip in driver_trips}
+            route_counts = [
+                sum(id(trip) in driver_trip_ids for trip in route["trips"])
+                for route in routes
             ]
-            matrix_table = Table(
-                matrix_rows,
-                colWidths=matrix_column_widths,
-                repeatRows=2,
-                hAlign="LEFT",
-                style=TableStyle([
-                    ("SPAN", (0, 0), (0, 1)),
-                    ("SPAN", (-1, 0), (-1, 1)),
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
-                    ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#CBD5E1")),
-                    ("ROWBACKGROUNDS", (0, 2), (-1, -1), [
-                        colors.white, colors.HexColor("#E2E8F0"),
-                    ]),
-                    ("GRID", (0, 0), (-1, -1), 0.7, colors.HexColor("#64748B")),
-                    ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                    ("ALIGN", (1, 2), (-1, -1), "CENTER"),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 6),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 6),
-                    ("TOPPADDING", (0, 0), (-1, -1), 6),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 6),
+            matrix_rows.append([
+                Paragraph(escape(driver_name), compact_cell_style),
+                *[Paragraph(str(count), compact_cell_style) for count in route_counts],
+                Paragraph(str(len(driver_trips)), compact_cell_style),
+            ])
+
+        route_columns_width = max(
+            8 * mm,
+            (available_width - 42 * mm - 22 * mm) / max(len(routes), 1),
+        )
+        matrix_column_widths = [
+            42 * mm,
+            *[route_columns_width for _ in routes],
+            22 * mm,
+        ]
+        matrix_table = Table(
+            matrix_rows,
+            colWidths=matrix_column_widths,
+            repeatRows=2,
+            hAlign="LEFT",
+            style=TableStyle([
+                ("SPAN", (0, 0), (0, 1)),
+                ("SPAN", (-1, 0), (-1, 1)),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
+                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#CBD5E1")),
+                ("ROWBACKGROUNDS", (0, 2), (-1, -1), [
+                    colors.white, colors.HexColor("#E2E8F0"),
                 ]),
-            )
-            story.append(matrix_table)
+                ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#64748B")),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("ALIGN", (1, 2), (-1, -1), "CENTER"),
+                ("LEFTPADDING", (0, 0), (-1, -1), 1.5),
+                ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
+                ("TOPPADDING", (0, 0), (-1, -1), 1.5),
+                ("BOTTOMPADDING", (0, 0), (-1, -1), 1.5),
+            ]),
+        )
+        story.append(matrix_table)
 
     def trip_table(
         group_trips: list[dict[str, Any]],

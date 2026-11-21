@@ -155,13 +155,22 @@ preserved in `legacy_trip_rate_review`, cleared from the active trip-rate fields
 and marked unresolved until reviewed against an actual trailer.
 
 To repair imported historical trips that still have blank route and rate fields,
-run [`supabase_trip_route_rate_backfill.sql`](./supabase_trip_route_rate_backfill.sql)
+run [`supabase_trip_route_rate_backfill.sql`](./Sql%20snippets/supabase_trip_route_rate_backfill.sql)
 after both migrations above. It matches warehouse codes and full warehouse names,
 fills missing route numbers, and uses an existing trailer capacity or one
 unambiguous `24P`, `36P`, or `46P` marker in the load description to look up a
-configured directional rate. Existing trip-rate snapshots are preserved. Trips
-with missing or ambiguous capacity, or without a configured rate, keep their
+configured directional rate. The current backfill also records the confirmed
+36-pallet capacity for trailer MUA538 and applies it only to that trailer's trips
+with missing rates. Existing trip-rate snapshots are preserved. Trips with
+missing or ambiguous capacity, or without a configured rate, keep their
 rate-review flag and are not assigned a guessed rate or trailer.
+
+To recover trailer assignments stored in the trip plate field, run
+[`supabase_trip_trailer_plate_backfill.sql`](./Sql%20snippets/supabase_trip_trailer_plate_backfill.sql).
+It matches the stored trailer plate or legacy trip plate value to exactly one
+registered trailer, across all trip dates. The result lists assigned plates,
+ambiguous registry matches, and values with no registry match. Only exact
+single matches are assigned; ambiguous and unmatched records remain unchanged.
 
 ## Tire Monitoring Sheet
 

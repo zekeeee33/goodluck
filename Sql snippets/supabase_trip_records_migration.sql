@@ -58,7 +58,7 @@ begin
             coalesce(nullif(trip.driver_name, ''), driver.name) as driver_name,
             trip.driver_id,
             coalesce(nullif(trip.plate_no, ''), truck.plate_number) as truck_plate,
-            trailer.plate_number as trailer_plate,
+            coalesce(nullif(trailer.plate_number, ''), nullif(trip.trailer_plate_no, '')) as trailer_plate,
             coalesce(
                 movement.load_type,
                 case

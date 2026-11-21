@@ -896,6 +896,12 @@ button.dispatcher-summary-card:hover { transform: translateY(-1px); border-color
 .trip-report-driver-group h3 span { color: var(--muted); font-size: 11px; font-weight: 500; }
 .trip-report-preview-wrap { max-height: min(58vh, 620px); overflow: auto; }
 .trip-report-preview .trip-record-table { min-width: 1120px; }
+.trip-report-preview .trip-record-table th,
+.trip-report-preview .trip-record-table td { padding: 4px 5px; font-size: 10px; line-height: 1.15; }
+.trip-report-preview .trip-driver-route-summary-table { table-layout: fixed; width: 100%; }
+.trip-report-preview .trip-driver-route-summary-table th,
+.trip-report-preview .trip-driver-route-summary-table td { min-width: 0; padding: 3px 4px; overflow-wrap: anywhere; }
+.trip-report-preview .trip-report-summary-table { min-width: 0 !important; width: 100%; table-layout: fixed; }
 .trip-record-filter-disclosure { margin-top: 12px; }
 .trip-record-filter-summary { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 0 12px; border: 1px solid var(--border); border-radius: var(--radius-control); color: var(--ink); font-size: 12px; font-weight: 700; cursor: pointer; list-style: none; }
 .trip-record-filter-summary::-webkit-details-marker { display: none; }
@@ -910,35 +916,29 @@ button.dispatcher-summary-card:hover { transform: translateY(-1px); border-color
 .trip-record-table { min-width: 1540px; }
 .trip-driver-route-summary-panel { margin-top: 15px; }
 .trip-driver-route-summary-note { margin: 5px 0 0; color: var(--muted); font-size: 11px; }
-.trip-driver-route-summary-wrap { overflow-x: auto; }
-.trip-driver-route-summary-table { min-width: 640px; }
-.trip-driver-route-summary-table { color: #172033; border: 1px solid #64748B; }
-.trip-driver-route-summary-table thead tr:first-child th {
-  border-color: #334155;
-  background: #17365D;
-  color: #FFFFFF;
-  font-weight: 800;
-}
-.trip-driver-route-summary-table thead tr:nth-child(2) th {
-  border-color: #64748B;
-  background: #CBD5E1;
-  color: #172033;
-  font-size: 11px;
-  font-weight: 800;
-  letter-spacing: 0;
-  text-transform: none;
-}
-.trip-driver-route-summary-table thead th { text-align: center; }
-.trip-driver-route-summary-table tbody th,
-.trip-driver-route-summary-table tbody td {
-  border-color: #94A3B8;
-  color: #172033;
-  font-size: 12px;
-  font-weight: 650;
-}
-.trip-driver-route-summary-table tbody tr:nth-child(even) { background: #E2E8F0; }
-.trip-driver-route-summary-table tbody tr:hover { background: #CBD5E1; }
-.trip-driver-route-summary-table tbody td:last-child { font-weight: 800; }
+.trip-driver-route-summary-wrap { max-width: 100%; overflow: auto; border: 1px solid var(--border); border-radius: var(--radius-inset); }
+.trip-driver-route-summary-table { width: max-content; min-width: 100%; border: 0; border-collapse: separate; border-spacing: 0; color: var(--ink); }
+.trip-driver-route-summary-table th,
+.trip-driver-route-summary-table td { padding: 6px 10px; border-right: 1px solid var(--table-line); border-bottom: 1px solid var(--table-line); vertical-align: middle; }
+.trip-driver-route-summary-table thead th { position: sticky; top: 0; z-index: 1; min-width: 132px; background: var(--table-head); color: var(--text-label); font-size: 10px; font-weight: 700; text-align: center; }
+.trip-driver-route-summary-table thead th:first-child,
+.trip-driver-route-summary-table tbody th { position: sticky; left: 0; z-index: 2; min-width: 160px; max-width: 220px; text-align: left; }
+.trip-driver-route-summary-table thead th:first-child { z-index: 3; background: var(--table-head); }
+.trip-driver-route-summary-table thead th:last-child { min-width: 72px; }
+.trip-driver-route-summary-route { display: block; color: var(--muted); font-size: 9px; font-weight: 700; letter-spacing: .45px; text-transform: uppercase; }
+.trip-driver-route-summary-path { display: block; margin-top: 3px; color: var(--ink); font-size: 10px; font-weight: 650; line-height: 1.3; overflow-wrap: anywhere; }
+.trip-driver-route-summary-table tbody tr { background: var(--surface); }
+.trip-driver-route-summary-table tbody tr:nth-child(even) { background: var(--surface-soft); }
+.trip-driver-route-summary-table tbody tr:hover { background: var(--table-hover); }
+.trip-driver-route-summary-table tbody th { background: var(--surface); color: var(--ink); font-size: 11px; font-weight: 650; overflow-wrap: anywhere; }
+.trip-driver-route-summary-table tbody tr:nth-child(even) th { background: var(--surface-soft); }
+.trip-driver-route-summary-table tbody tr:hover th { background: var(--table-hover); }
+.trip-driver-route-summary-table tbody td { min-width: 62px; color: var(--text-secondary); font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; }
+.trip-driver-route-summary-table tbody td:last-child { background: color-mix(in srgb, var(--teal-soft) 55%, var(--surface)); color: var(--ink); font-weight: 750; }
+.trip-driver-route-summary-table tbody tr:last-child th,
+.trip-driver-route-summary-table tbody tr:last-child td { border-bottom: 0; }
+.trip-driver-route-summary-table th:last-child,
+.trip-driver-route-summary-table td:last-child { border-right: 0; }
 .trip-record-sort { padding: 0; border: 0; background: transparent; color: inherit; font-size: inherit; font-weight: inherit; text-align: left; white-space: nowrap; cursor: pointer; }
 .trip-record-sort:hover { color: var(--blue); }
 .trip-record-subvalue { display: block; margin-top: 3px; color: var(--muted); font-size: 10px; }
@@ -1469,17 +1469,28 @@ tbody tr:hover { background: var(--table-hover); }
 }
 
 @media print {
-  @page { size: landscape; margin: 8mm; }
+  @page { size: landscape; margin: 5mm; }
   .sidebar, .topbar, .footer, .toast-region, .page-heading-actions, .theme-toggle { display: none !important; }
   .main-column { margin: 0; }
   .main-content { width: 100%; min-height: 0; padding: 0; }
   .trip-report-panel { margin: 0; padding: 0; overflow: visible; border: 0; box-shadow: none; }
   .trip-report-actions, .trip-report-filter-disclosure, .trip-report-panel > .panel-heading .trip-report-actions { display: none !important; }
   .trip-report-preview, .trip-report-preview-wrap, .trip-report-preview .table-wrap { max-height: none !important; overflow: visible !important; }
-  .trip-report-preview .trip-record-table { min-width: 0 !important; width: 100%; font-size: 8pt; }
+  .trip-report-preview { font-size: 7pt; }
+  .trip-report-preview .trip-report-summary,
+  .trip-report-preview .trip-report-section,
+  .trip-report-preview .trip-report-driver-group { margin: 3px 0 5px; }
+  .trip-report-preview .trip-report-section > h3,
+  .trip-report-preview .trip-report-driver-group h3 { margin-bottom: 3px; font-size: 9pt; }
+  .trip-report-preview .trip-record-table,
+  .trip-report-preview .trip-report-summary-table,
+  .trip-report-preview .trip-driver-route-summary-table { min-width: 0 !important; width: 100% !important; table-layout: fixed; font-size: 6.5pt; }
   .trip-report-preview .trip-record-table th,
-  .trip-report-preview .trip-record-table td { padding: 3px 4px; }
-  .trip-report-section, .trip-report-driver-group { break-inside: avoid-page; }
+  .trip-report-preview .trip-record-table td { padding: 1.5px 2px; line-height: 1.05; }
+  .trip-report-preview .trip-driver-route-summary-table th,
+  .trip-report-preview .trip-driver-route-summary-table td { overflow-wrap: anywhere; }
+  .trip-report-preview .trip-report-summary-table th,
+  .trip-report-preview .trip-report-summary-table td { overflow-wrap: anywhere; }
   .panel, .stat-card { box-shadow: none; }
   body { background: white; color: black; }
 }
