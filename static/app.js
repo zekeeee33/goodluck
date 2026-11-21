@@ -3456,7 +3456,7 @@ function renderDriverRouteSummary(rows) {
     ? `<div class="trip-driver-route-summary-wrap"><table class="trip-record-table trip-driver-route-summary-table" aria-label="Trip counts by driver and route">
         <thead><tr>
           <th scope="col">Driver</th>
-          ${routeEntries.map(([, route]) => `<th scope="col" aria-label="${escapeHtml(`${route.label}: ${route.origin} to ${route.destination}`)}"><span class="trip-driver-route-summary-route">${escapeHtml(route.label)}</span><span class="trip-driver-route-summary-path">${escapeHtml(route.origin)} → ${escapeHtml(route.destination)}</span></th>`).join("")}
+          ${routeEntries.map(([, route]) => `<th scope="col">${escapeHtml(route.label)}</th>`).join("")}
           <th scope="col" class="trip-driver-route-summary-total-heading">Total</th>
         </tr></thead>
         <tbody>${driverEntries.map(([driverName, counts]) => {
@@ -3470,9 +3470,13 @@ function renderDriverRouteSummary(rows) {
       </table></div>`
     : '<div class="empty-state"><strong>No trip counts to summarize</strong><small>Trips matching the current filters will appear here.</small></div>';
 
+  const legend = routeEntries.length
+    ? `<p class="trip-route-legend"><strong>Route Legend:</strong> ${routeEntries.map(([, route]) => `${escapeHtml(route.label)} = ${escapeHtml(`${route.origin} → ${route.destination}`)}`).join(" &nbsp;|&nbsp; ")}</p>`
+    : "";
+
   return `<section class="panel trip-driver-route-summary-panel" aria-label="Summary per driver">
     <div class="panel-heading"><div><p class="eyebrow">TRIP COUNTS</p><h2>Summary per driver</h2><p class="trip-driver-route-summary-note">Number of trips made by each driver on each route.</p></div></div>
-    ${table}
+    ${legend}${table}
   </section>`;
 }
 
@@ -3722,10 +3726,10 @@ function tripReportGroupedTables(records, groupBy) {
           <h3>Summary Per Driver${routes.length > routeChunkSize
             ? ` · Routes ${chunkIndex * routeChunkSize + 1}–${chunkIndex * routeChunkSize + routeChunk.length}`
             : ""}</h3>
+          <p class="trip-route-legend"><strong>Route Legend:</strong> ${routeChunk.map((route) => `${escapeHtml(route.label)} = ${escapeHtml(`${route.origin} → ${route.destination}`)}`).join(" &nbsp;|&nbsp; ")}</p>
           <div class="table-wrap"><table class="trip-record-table trip-driver-route-summary-table">
             <thead>
-              <tr><th rowspan="2">Driver</th>${routeChunk.map((route) => `<th>${escapeHtml(route.label)}</th>`).join("")}<th rowspan="2">No. of Trips</th></tr>
-              <tr>${routeChunk.map((route) => `<th>${escapeHtml(`${route.origin} → ${route.destination}`)}</th>`).join("")}</tr>
+              <tr><th>Driver</th>${routeChunk.map((route) => `<th>${escapeHtml(route.label)}</th>`).join("")}<th>No. of Trips</th></tr>
             </thead>
             <tbody>${driverGroups.map((driver) => `<tr>
               <th scope="row">${escapeHtml(driver.name)}</th>

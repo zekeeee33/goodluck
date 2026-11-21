@@ -214,23 +214,20 @@ def build_trip_pdf_report(
 
     if routes:
         story.append(Paragraph("Summary Per Driver", group_style))
+        legend_parts = [
+            f"{escape(route['label'])}: {_short_route_location(route['origin'])} → {_short_route_location(route['destination'])}"
+            for route in routes
+        ]
+        legend_style = ParagraphStyle(
+            "TripReportRouteLegend", parent=small_style,
+            fontSize=6.5, leading=7.5,
+        )
+        story.append(Paragraph("<b>Route Legend:</b> " + " &nbsp; | &nbsp; ".join(legend_parts), legend_style))
+        story.append(Spacer(1, 1 * mm))
         matrix_rows = [[
             Paragraph("Driver", header_style),
             *[Paragraph(escape(route["label"]), header_style) for route in routes],
             Paragraph("No. of Trips", header_style),
-        ], [
-            Paragraph("", header_style),
-            *[
-                Paragraph(
-                    escape(
-                        f"{_short_route_location(route['origin'])} → "
-                        f"{_short_route_location(route['destination'])}"
-                    ),
-                    matrix_route_style,
-                )
-                for route in routes
-            ],
-            Paragraph("", header_style),
         ]]
         for driver_name, driver_trips in drivers:
             driver_trip_ids = {id(trip) for trip in driver_trips}
@@ -256,19 +253,16 @@ def build_trip_pdf_report(
         matrix_table = Table(
             matrix_rows,
             colWidths=matrix_column_widths,
-            repeatRows=2,
+            repeatRows=1,
             hAlign="LEFT",
             style=TableStyle([
-                ("SPAN", (0, 0), (0, 1)),
-                ("SPAN", (-1, 0), (-1, 1)),
                 ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1F4E78")),
-                ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#CBD5E1")),
-                ("ROWBACKGROUNDS", (0, 2), (-1, -1), [
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [
                     colors.white, colors.HexColor("#E2E8F0"),
                 ]),
                 ("GRID", (0, 0), (-1, -1), 0.45, colors.HexColor("#64748B")),
                 ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("ALIGN", (1, 2), (-1, -1), "CENTER"),
+                ("ALIGN", (1, 1), (-1, -1), "CENTER"),
                 ("LEFTPADDING", (0, 0), (-1, -1), 1.5),
                 ("RIGHTPADDING", (0, 0), (-1, -1), 1.5),
                 ("TOPPADDING", (0, 0), (-1, -1), 1.5),
